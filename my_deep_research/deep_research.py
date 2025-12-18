@@ -1,23 +1,50 @@
 import asyncio
+import json
 from datetime import datetime
-
-from langchain.agents import create_agent
-from langchain.chat_models import BaseChatModel, init_chat_model
-from langchain.messages import ToolMessage
-from langchain.tools import tool
-from langchain_core.messages import HumanMessage, SystemMessage, get_buffer_string
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import END, START, MessagesState, StateGraph
-from langgraph.types import Command, interrupt
-from pydantic import BaseModel
-from langchain_tavily.tavily_search import TavilySearch
+from typing import Annotated, List, Literal, Optional, TypedDict
 
 import prompts
+from langchain.agents import create_agent
+from langchain.chat_models import BaseChatModel, init_chat_model
+from langchain.tools import tool
+from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_tavily.tavily_search import TavilySearch
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.graph import END, START, StateGraph, add_messages
+from langgraph.types import Command
+from loguru import logger
 
-model: BaseChatModel = init_chat_model(model="xai:grok-4-1-fast-non-reasoning")
+_MODEL: Optional[BaseChatModel] = None
+_TAVILY_SEARCH_TOOL: Optional[TavilySearch] = None
 
 
-class AgentState(MessagesState):
+def get_model() -> BaseChatModel:
+    """Lazily initialize the chat model to avoid import-time failures."""
+    global _MODEL
+    if _MODEL is None:
+        _MODEL = init_chat_model(model="xai:grok-4-1-fast-non-reasoning")
+    return _MODEL
+
+
+def get_tavily_search_tool() -> TavilySearch:
+    """Lazily initialize Tavily tool to avoid import-time failures."""
+    global _TAVILY_SEARCH_TOOL
+    if _TAVILY_SEARCH_TOOL is None:
+        _TAVILY_SEARCH_TOOL = TavilySearch(max_results=10)
+        _TAVILY_SEARCH_TOOL.name = "web_search"
+    return _TAVILY_SEARCH_TOOL
+
+
+class AgentState(TypedDict, total=False):
+    # Main conversation history (user + assistant + tools)
+    general_assistant_messages: Annotated[List[AnyMessage], add_messages]
+
+    # Internal planner/research trajectory
+    planner_messages: Annotated[List[AnyMessage], add_messages]
+
+    deep_research_query: str
+    deep_research_tool_call_id: str
+    report_writing_instructions: Optional[str]
     final_report: str
 
 
@@ -26,18 +53,7 @@ def get_formatted_date():
 
 
 @tool
-def clarify_with_user(question: str) -> str:
-    """
-    Clarify with the user to get more information.
-    Args:
-        question: The question to the user for further clarification.
-    Returns:
-        The clarification from the user.
-    """
-    return interrupt({"type": "clarify_with_user", "question": question})
-
-@tool
-def start_deep_research(query: str) -> str:
+def start_deep_research(query: str):
     """
     Start a deep research on the query.
     Args:
@@ -45,84 +61,339 @@ def start_deep_research(query: str) -> str:
     Returns:
         The research report.
     """
-    return ""
+    logger.debug(f"start_deep_research: {query = }")
+    return Command(
+        update={"deep_research_query": query},
+        goto="planner",
+    )
+
+
+@tool
+async def web_search(
+    query: str,
+    time_range: Optional[Literal["day", "week", "month", "year"]] = None,
+    topic: Optional[Literal["general", "news", "finance"]] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> str:
+    """
+    A search engine optimized for comprehensive, accurate, and trusted results.
+    Useful for when you need to answer questions about current events.
+    It not only retrieves URLs and snippets, but offers advanced search depths,
+    domain management, time range filters, and image search, this tool delivers
+    real-time, accurate, and citation-backed results.
+    Input should be a search query.
+    Args:
+        query: The search query.
+        time_range: The time range back from the current date to filter results based on publish date or last updated date. Useful when looking for sources that have published or updated data.
+        topic: The category of the search. Can be "general", "news", or "finance". The category of the search "news" is useful for retrieving real-time updates, particularly about politics, sports, and major current events covered by mainstream media sources. "general" is for broader, more general-purpose searches that may include a wide range of sources.
+        start_date: Will return all results after the specified start date based on publish date or last updated date. Required to be written in the format YYYY-MM-DD.
+        end_date: Will return all results before the specified end date based on publish date or last updated date. Required to be written in the format YYYY-MM-DD.
+    Returns:
+        The formatted search results.
+    """
+    logger.debug(
+        f'Web searching for "{query}" with time_range={time_range}, topic={topic}, start_date={start_date}, end_date={end_date}'
+    )
+    raw_results = await get_tavily_search_tool().ainvoke(
+        query,
+        time_range=time_range,
+        topic=topic,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    results = raw_results["results"]
+    results.sort(key=lambda x: x["score"], reverse=True)
+    results_str = ""
+    for result in results:
+        title, url, content = result["title"], result["url"], result["content"]
+        results_str += f"Title: {title}\nURL: {url}\nContent: {content}"
+        results_str += "\n----\n"
+    logger.debug(f"Web search results: {results_str}")
+    return results_str
+
+
+@tool
+async def start_research(research_proposal: str) -> str:
+    """
+    Start a research on the research proposal.
+    Args:
+        research_proposal: The research proposal to start the research on.
+    Returns:
+        Synthesized research findings.
+    """
+    react_agent = create_agent(
+        model=get_model(),
+        tools=[web_search],
+        system_prompt=prompts.RESEARCHER_SYSTEM_PROMPT.format(
+            date=get_formatted_date()
+        ),
+    )
+    output_state = await react_agent.ainvoke(
+        {"messages": [HumanMessage(content=research_proposal)]}
+    )
+    response = output_state["messages"][-1]
+    logger.debug(f"start_research: response: {json.dumps(response, indent=2)}")
+    return response.content
+
+
+@tool
+async def write_report(additional_instructions: Optional[str] = None):
+    """
+    Write the final report based on the research trajectory and the additional instructions.
+    Args:
+        additional_instructions: Additional instructions for the report writer.
+    Returns:
+        None
+    """
+    return Command(
+        update={"report_writing_instructions": additional_instructions},
+        goto="write_report",
+    )
+
+
+TOOL_BY_NAME = {
+    "web_search": web_search,
+    "start_deep_research": start_deep_research,
+    "start_research": start_research,
+    "write_report": write_report,
+}
 
 
 async def node_general_assistant(state: AgentState):
-    system_prompt = prompts.GENERAL_ASSISTANT_SYSTEM_PROMPT.format(date=get_formatted_date())
-    messages = [SystemMessage(content=system_prompt), *state["messages"]]
+    system_prompt = prompts.GENERAL_ASSISTANT_SYSTEM_PROMPT.format(
+        date=get_formatted_date()
+    )
+    messages = [
+        SystemMessage(content=system_prompt),
+        *state.get("general_assistant_messages", []),
+    ]
 
-    tavily_search_tool = TavilySearch(max_results=10)
-    tavily_search_tool.name = "web_search"
-    general_assistant_model = model.bind_tools([clarify_with_user, tavily_search_tool, start_deep_research])
+    general_assistant_model = get_model().bind_tools(
+        [web_search, start_deep_research]
+    )
 
     response = await general_assistant_model.ainvoke(messages)
 
     tool_calls = response.tool_calls
 
     if tool_calls:
-        tool = tool_calls[0]["name"]
-        print(f"{tool}: {tool_calls[0]['args']}")
-        if tool == "clarify_with_user":
-            clarification = await clarify_with_user.ainvoke(tool_calls[0]["args"])
-            return Command(
-                update={"messages": [response, HumanMessage(content=clarification)]},
-                goto="general_assistant",
+        names = set(tool_call["name"] for tool_call in tool_calls)
+        if "web_search" in names and len(names) > 1:
+            logger.warning(
+                "general_assistant: web_search is not the only tool call! Keeping web_search tools only ..."
             )
-        elif tool == "web_search":
-            results = await tavily_search_tool.ainvoke(tool_calls[0]["args"])
-            results = results["results"]
-            results.sort(key=lambda x: x["score"], reverse=True)
-            results_str = ""
-            for result in results:
-                title, url, content = result["title"], result["url"], result["content"]
-                results_str += f"Title: {title}\nURL: {url}\nContent: {content}\n"
-                results_str += "\n----\n"
+            tool_calls = [
+                tool_call
+                for tool_call in tool_calls
+                if tool_call["name"] == "web_search"
+            ]
+            response.tool_calls = tool_calls
+        if "start_deep_research" in names:
+            tool_call = tool_calls[0]
+            if len(tool_calls) > 1:
+                logger.warning(
+                    "general_assistant: start_deep_research is not the only tool call! Executing the first start_deep_research ..."
+                )
+                for t in tool_calls:
+                    if t["name"] == "start_deep_research":
+                        tool_call = t
+                        break
+                response.tool_calls = [tool_call]
 
-            result_msg = ToolMessage(tool_call_id=tool_calls[0]["id"], name=tool, content=results_str)
+            command = await TOOL_BY_NAME[tool_call["name"]].ainvoke(tool_call["args"])
             return Command(
-                update={"messages": [response, result_msg]},
+                update={
+                    "general_assistant_messages": [response],
+                    "deep_research_tool_call_id": tool_call["id"],
+                    **command.update,
+                },
+                goto=command.goto,
+            )
+        else:  # general tool calls like web_search
+            results = await asyncio.gather(
+                *[
+                    TOOL_BY_NAME[tool_call["name"]].ainvoke(tool_call["args"])
+                    for tool_call in tool_calls
+                ]
+            )
+            result_msgs = [
+                ToolMessage(
+                    content=result, tool_call_id=tool_call["id"], name=tool_call["name"]
+                )
+                for result, tool_call in zip(results, tool_calls)
+            ]
+
+            return Command(
+                update={"general_assistant_messages": [response, *result_msgs]},
                 goto="general_assistant",
             )
-        else:
-            raise NotImplementedError(f"Tool {tool} not implemented")
-    else:
+
+    else:  # no tool calls, clarification/direct answer
+        # plain response, end this invocation with the response
         return Command(
-            update={"messages": [response], "final_report": response.content},
+            update={"general_assistant_messages": [response]},
             goto=END,
         )
 
 
-graph_builder = StateGraph(AgentState)
-graph_builder.add_node("general_assistant", node_general_assistant)
+async def node_planner(state: AgentState):
+    system_prompt = prompts.PLANNER_SYSTEM_PROMPT.format(date=get_formatted_date())
+    existing_history = state.get("planner_messages", [])
+    seed_messages: List[AnyMessage] = []
+    if not existing_history:
+        seed_messages = [
+            HumanMessage(
+                content=f"<user_query>\n{state.get('deep_research_query','')}\n</user_query>\n"
+            )
+        ]
+    planner_history = [*existing_history, *seed_messages]
+    messages = [
+        SystemMessage(content=system_prompt),
+        *planner_history,
+    ]
 
-graph_builder.add_edge(START, "general_assistant")
-graph_builder.add_edge("general_assistant", END)
+    planner_model = get_model().bind_tools(
+        [web_search, start_research, write_report]
+    )
+    response = await planner_model.ainvoke(messages)
 
-graph = graph_builder.compile(checkpointer=InMemorySaver())
+    tool_calls = response.tool_calls
+    if tool_calls:
+        logger.debug(f"planner: tool calls: {json.dumps(tool_calls, indent=2)}")
+        # write_report is a routing tool (returns Command), so handle it explicitly.
+        if any(tc["name"] == "write_report" for tc in tool_calls):
+            tool_call = next(tc for tc in tool_calls if tc["name"] == "write_report")
+            if len(tool_calls) > 1:
+                logger.warning(
+                    "planner: write_report is not the only tool call! Executing write_report only ..."
+                )
+                response.tool_calls = [tool_call]
+
+            command = await TOOL_BY_NAME[tool_call["name"]].ainvoke(tool_call["args"])
+            return Command(
+                update={
+                    "planner_messages": [*seed_messages, response],
+                    **command.update,
+                },
+                goto=command.goto,
+            )
+
+        results = await asyncio.gather(
+            *[
+                TOOL_BY_NAME[tool_call["name"]].ainvoke(tool_call["args"])
+                for tool_call in tool_calls
+            ]
+        )
+        result_msgs = [
+            ToolMessage(
+                content=result, tool_call_id=tool_call["id"], name=tool_call["name"]
+            )
+            for result, tool_call in zip(results, tool_calls)
+        ]
+        return Command(
+            update={"planner_messages": [*seed_messages, response, *result_msgs]},
+            goto="planner",
+        )
+    else:
+        logger.warning(f"planner: No tool calls! Ending planner with response: {response.content}")
+        return Command(update={"planner_messages": [*seed_messages, response]}, goto=END)
+
+
+async def node_write_report(state: AgentState):
+    report_writer_model = get_model()
+
+    # synthesize the research trajectory
+    research_trajectory = ""
+    tool_call_to_results = []
+    for msg in state["planner_messages"]:
+        if msg.type == "ai":
+            call_to_result = {}
+            tool_calls = msg.tool_calls
+            if tool_calls:
+                for tool_call in tool_calls:
+                    call_to_result[(tool_call["name"], tool_call["id"])] = {
+                        "name": tool_call["name"],
+                        "args": tool_call["args"],
+                        "result": None,
+                    }
+            tool_call_to_results.append((msg.content, call_to_result))
+        elif msg.type == "tool":
+            call_to_result = tool_call_to_results[-1][1]
+            key = (msg.name, msg.tool_call_id)
+            if key not in call_to_result:
+                logger.warning(
+                    f"write_report: Tool result without matching tool call: {key}"
+                )
+            else:
+                call_to_result[key]["result"] = msg.content
+        elif msg.type == "human":
+            research_trajectory += f"<user>\n{msg.content}\n</user>\n"
+        else:
+            raise ValueError(f"write_report: Unexpected message type: {msg.type}")
+
+    for reasoning, call_to_result in tool_call_to_results:
+        research_trajectory += f"<reasoning>\n{reasoning}\n</reasoning>\n"
+        for (name, _), result in call_to_result.items():
+            research_trajectory += (
+                f"<call_{name}>\n{json.dumps(result['args'])}\n</call_{name}>\n"
+            )
+            research_trajectory += (
+                f"<result_{name}>\n{result['result']}\n</result_{name}>\n"
+            )
+
+    research_trajectory += f"<additional_instructions>\n{state.get('report_writing_instructions')}\n</additional_instructions>\n"
+    logger.debug(f"write_report: research_trajectory: {research_trajectory}")
+
+    messages = [
+        SystemMessage(
+            content=prompts.REPORT_WRITER_SYSTEM_PROMPT.format(
+                date=get_formatted_date()
+            )
+        ),
+        HumanMessage(content=research_trajectory),
+    ]
+
+    response = await report_writer_model.ainvoke(messages)
+
+    prev_tool_call_id = state["deep_research_tool_call_id"]
+    assistant_tool_result = ToolMessage(
+        content=response.content,
+        tool_call_id=prev_tool_call_id,
+        name="start_deep_research",
+    )
+
+    return Command(
+        update={
+            "final_report": response.content,
+            "general_assistant_messages": [assistant_tool_result],
+        },
+        goto="general_assistant",
+    )
 
 
 async def main():
-    config = {
-        "configurable": {
-            "thread_id": "main"
-        }
-    }
-    initial_message = input("Enter the initial query: ")
-    response = await graph.ainvoke(
-        {"messages": [HumanMessage(content=initial_message)]}, config=config
-    )
-    while "__interrupt__" in response:
-        for item in response["__interrupt__"]:
-            payload = item.value
-            print("Interrupted with payload: ", payload)
-            if payload["type"] == "clarify_with_user":
-                question = payload["question"]
-                clarification = input(f"System asked a clarifying question: {question}\nYou: ")
-                response = await graph.ainvoke(Command(resume=clarification), config=config)
-            else:
-                raise NotImplementedError(f"Interrupted type {payload['type']} not implemented")
-    print(response["final_report"])
+    graph_builder = StateGraph(AgentState)
+    graph_builder.add_node("general_assistant", node_general_assistant)
+    graph_builder.add_node("planner", node_planner)
+    graph_builder.add_node("write_report", node_write_report)
+    
+    graph_builder.add_edge(START, "general_assistant")
+
+    graph = graph_builder.compile(checkpointer=InMemorySaver())
+
+    config = {"configurable": {"thread_id": "main"}}
+
+    while True:
+        user = input("You: ").strip()
+        if user.lower() in {"exit", "quit"}:
+            break
+
+        state = await graph.ainvoke(
+            {"general_assistant_messages": [HumanMessage(content=user)]}, config=config
+        )
+        print("Assistant:", state["general_assistant_messages"][-1].content)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
