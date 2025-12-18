@@ -1,4 +1,4 @@
-# My Deep Research
+# Research Workbench
 
 > **⚠️ Work in Progress**: This project is currently under active development. Features, APIs, and documentation may change.
 
@@ -6,7 +6,7 @@ An AI-powered research assistant that uses multi-agent coordination to perform c
 
 ## Overview
 
-My Deep Research is a sophisticated research system that intelligently routes queries between quick information retrieval and deep, multi-step research workflows. It employs a hierarchical agent architecture to plan, execute, and synthesize research findings into comprehensive reports.
+Research Workbench is a sophisticated research system that intelligently routes queries between quick information retrieval and deep, multi-step research workflows. It employs a hierarchical agent architecture to plan, execute, and synthesize research findings into comprehensive reports.
 
 ## Architecture
 
@@ -61,7 +61,7 @@ The system uses a multi-agent architecture with four specialized components:
 1. Clone the repository:
 ```bash
 git clone <repository-url>
-cd my_deep_research
+cd research_workbench
 ```
 
 2. Install dependencies using `uv`:
@@ -85,7 +85,7 @@ export XAI_API_KEY="your-xai-api-key"
 Run the interactive CLI:
 
 ```bash
-python -m my_deep_research.deep_research
+python -m research_workbench.deep_research
 ```
 
 The system will prompt you for queries. You can:
@@ -106,8 +106,8 @@ The system will prompt you for queries. You can:
 ## Project Structure
 
 ```
-my_deep_research/
-├── my_deep_research/
+research_workbench/
+├── research_workbench/
 │   ├── __init__.py
 │   ├── deep_research.py      # Main agent orchestration logic
 │   └── prompts.py            # System prompts for all agents
@@ -133,6 +133,28 @@ This project is actively being developed. Current areas of focus include:
 - Improving research quality and completeness
 - Optimizing cost and latency
 - Enhancing report formatting
+
+## Future Work
+
+This project is designed as a personal research system with an ambitious roadmap:
+
+### Agent Paradigms
+- **Debate-Verifier Agent**: Extend ReAct paradigm with an additional verifier/debator agent that performs adversarial debates to validate research findings and identify potential weaknesses or biases in conclusions.
+
+### Idea Generation & Synthesis
+- **Idea Generator**: Build an agent that generates new ideas based on previous ideas, creating an iterative ideation loop.
+- **Synthesis Engine**: Combine deep research and debate capabilities to synthesize ideas, ensuring generated concepts are well-researched and critically examined.
+
+### Specialized Research Agents
+- **Paper Reading Agent**: Develop specialized agents for reading, understanding, and extracting insights from academic papers.
+- **Literature Search Agent**: Create a specialized research agent focused on finding and evaluating relevant academic papers and scholarly sources.
+
+### Development & Tooling
+- **Coding Agent**: Integrate a coding agent/tool to facilitate idea prototyping, data analysis, and research automation, enabling the system to build and test hypotheses programmatically.
+
+### Observability & Evaluation
+- **Enhanced Observability**: Implement comprehensive logging, tracing, and monitoring for all agent interactions and decision points. **(High Priority)**
+- **Evaluation Framework**: Build robust evaluation systems to measure research quality, agent performance, and system reliability. **(High Priority)**
 
 ## License
 
