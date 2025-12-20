@@ -384,7 +384,7 @@ async def node_write_report(state: AgentState):
     )
 
 
-async def main():
+async def main(initial_user_query: Optional[str] = None):
     graph_builder = StateGraph(AgentState)
     graph_builder.add_node("general_assistant", node_general_assistant)
     graph_builder.add_node("planner", node_planner)
@@ -396,8 +396,8 @@ async def main():
 
     config = {"configurable": {"thread_id": "main"}}
 
+    user = initial_user_query.strip() or input("You: ").strip()
     while True:
-        user = input("You: ").strip()
         if user.lower() in {"exit", "quit"}:
             break
 
@@ -405,6 +405,7 @@ async def main():
             {"general_assistant_messages": [HumanMessage(content=user)]}, config=config
         )
         print("Assistant:", state["general_assistant_messages"][-1].content)
+        user = input("You: ").strip()
 
 
 if __name__ == "__main__":
