@@ -6,7 +6,7 @@ from typing import Annotated, List, Literal, Optional, TypedDict
 import prompts
 from langchain.agents import create_agent
 from langchain.chat_models import BaseChatModel, init_chat_model
-from langchain.tools import tool
+from langchain.tools import BaseTool, tool
 from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_tavily.tavily_search import TavilySearch
 from langgraph.checkpoint.memory import InMemorySaver
@@ -93,23 +93,30 @@ async def web_search(
         The formatted search results.
     """
     logger.debug(
-        f'Web searching for "{query}" with time_range={time_range}, topic={topic}, start_date={start_date}, end_date={end_date}'
+        f'web_search: Searching for "{query}" with time_range={time_range}, topic={topic}, start_date={start_date}, end_date={end_date}'
     )
-    raw_results = await get_tavily_search_tool().ainvoke(
-        query,
-        time_range=time_range,
-        topic=topic,
-        start_date=start_date,
-        end_date=end_date,
-    )
-    results = raw_results["results"]
-    results.sort(key=lambda x: x["score"], reverse=True)
-    results_str = ""
-    for result in results:
-        title, url, content = result["title"], result["url"], result["content"]
-        results_str += f"Title: {title}\nURL: {url}\nContent: {content}"
-        results_str += "\n----\n"
-    logger.debug(f"Web search results: {results_str}")
+    try:
+        raw_results = await get_tavily_search_tool().ainvoke(
+            query,
+            time_range=time_range,
+            topic=topic,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if isinstance(raw_results, str):
+            logger.debug(f"web_search: raw_results is a string: {raw_results}")
+            return f"web_search returned: {raw_results}"
+        results = raw_results["results"]
+        results.sort(key=lambda x: x["score"], reverse=True)
+        results_str = ""
+        for result in results:
+            title, url, content = result["title"], result["url"], result["content"]
+            results_str += f"Title: {title}\nURL: {url}\nContent: {content}"
+            results_str += "\n----\n"
+        # logger.debug(f"web_search: Web search results: {results_str}")
+    except Exception as e:
+        logger.error(f"web_search: Error calling web_search: {e}")
+        return f"Error calling web_search. Please try again using valid arguments."
     return results_str
 
 
@@ -129,11 +136,14 @@ async def start_research(research_proposal: str) -> str:
             date=get_formatted_date()
         ),
     )
+    # config with run_name for LangSmith tracing
+    config = {"run_name": "start_research_agent"}
     output_state = await react_agent.ainvoke(
-        {"messages": [HumanMessage(content=research_proposal)]}
+        {"messages": [HumanMessage(content=research_proposal)]},
+        config=config,
     )
     response = output_state["messages"][-1]
-    logger.debug(f"start_research: response: {json.dumps(response, indent=2)}")
+    logger.debug(f"start_research: {response.content = }")
     return response.content
 
 
@@ -169,9 +179,7 @@ async def node_general_assistant(state: AgentState):
         *state.get("general_assistant_messages", []),
     ]
 
-    general_assistant_model = get_model().bind_tools(
-        [web_search, start_deep_research]
-    )
+    general_assistant_model = get_model().bind_tools([web_search, start_deep_research])
 
     response = await general_assistant_model.ainvoke(messages)
 
@@ -189,6 +197,8 @@ async def node_general_assistant(state: AgentState):
                 if tool_call["name"] == "web_search"
             ]
             response.tool_calls = tool_calls
+            names = {"web_search"}
+
         if "start_deep_research" in names:
             tool_call = tool_calls[0]
             if len(tool_calls) > 1:
@@ -253,9 +263,7 @@ async def node_planner(state: AgentState):
         *planner_history,
     ]
 
-    planner_model = get_model().bind_tools(
-        [web_search, start_research, write_report]
-    )
+    planner_model = get_model().bind_tools([web_search, start_research, write_report])
     response = await planner_model.ainvoke(messages)
 
     tool_calls = response.tool_calls
@@ -296,8 +304,12 @@ async def node_planner(state: AgentState):
             goto="planner",
         )
     else:
-        logger.warning(f"planner: No tool calls! Ending planner with response: {response.content}")
-        return Command(update={"planner_messages": [*seed_messages, response]}, goto=END)
+        logger.warning(
+            f"planner: No tool calls! Ending planner with response: {response.content}"
+        )
+        return Command(
+            update={"planner_messages": [*seed_messages, response]}, goto=END
+        )
 
 
 async def node_write_report(state: AgentState):
@@ -377,7 +389,7 @@ async def main():
     graph_builder.add_node("general_assistant", node_general_assistant)
     graph_builder.add_node("planner", node_planner)
     graph_builder.add_node("write_report", node_write_report)
-    
+
     graph_builder.add_edge(START, "general_assistant")
 
     graph = graph_builder.compile(checkpointer=InMemorySaver())
