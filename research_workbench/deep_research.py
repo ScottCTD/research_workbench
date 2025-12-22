@@ -2,6 +2,7 @@ import asyncio
 import json
 from datetime import datetime
 from typing import Annotated, List, Literal, Optional, TypedDict
+from collections import Counter
 
 import prompts
 from config import Configuration
@@ -63,6 +64,17 @@ def start_deep_research(query: str):
 
 
 @tool
+def dummy_call_deep_research(msg: str):
+    """
+    A dummy tool that notify the model to only call start_deep_research once.
+    Args:
+        msg: The message to return.
+    Returns:
+        The message to return.
+    """
+    return msg
+
+@tool
 async def start_research(research_proposal: str, config: RunnableConfig) -> str:
     """
     Start a research on the research proposal.
@@ -107,6 +119,8 @@ def get_tool(name: str, config: RunnableConfig) -> BaseTool:
         return get_search_tool(Configuration.from_runnable_config(config))
     elif name == "start_deep_research":
         return start_deep_research
+    elif name == "dummy_call_deep_research":
+        return dummy_call_deep_research
     elif name == "start_research":
         return start_research
     elif name == "write_report":
@@ -135,62 +149,58 @@ async def node_general_assistant(state: AgentState, config: RunnableConfig):
     tool_calls = response.tool_calls
 
     if tool_calls:
-        names = set(tool_call["name"] for tool_call in tool_calls)
-        if "web_search" in names and len(names) > 1:
+        names = Counter(tool_call["name"] for tool_call in tool_calls)
+        
+        # if start_deep_research is called more than once, we need to notify the model to only call it once and execute other tool calls normally
+        if names["start_deep_research"] > 1:
             logger.warning(
-                "general_assistant: web_search is not the only tool call! Keeping web_search tools only ..."
+                "general_assistant: start_deep_research is called more than once! Notifying the model to only call it once ..."
             )
-            tool_calls = [
-                tool_call
-                for tool_call in tool_calls
-                if tool_call["name"] == "web_search"
-            ]
-            response.tool_calls = tool_calls
-            names = {"web_search"}
-
-        if "start_deep_research" in names:
-            tool_call = tool_calls[0]
+            for tool_call in tool_calls:
+                if tool_call["name"] == "start_deep_research":
+                    tool_call["name"] = "dummy_call_deep_research"
+                    tool_call["args"] = {"msg": "Please call start_deep_research only once."}
+        elif names["start_deep_research"] == 1:
             if len(tool_calls) > 1:
-                logger.warning(
-                    "general_assistant: start_deep_research is not the only tool call! Executing the first start_deep_research ..."
+                logger.warning("general_assistant: start_deep_research is called only once, but other tool calls are also present! Notifying the model to execute deep_research tool solely.")
+                for tool_call in tool_calls:
+                    if tool_call["name"] == "start_deep_research":
+                        tool_call["name"] = "dummy_call_deep_research"
+                        tool_call["args"] = {"msg": "If you want to start a deep research, start_deep_research should be your only tool call."}
+            else:  # valid deep research tool call
+                tool_call = tool_calls[0]
+                command = await get_tool(tool_call["name"], config).ainvoke(
+                    tool_call["args"]
                 )
-                for t in tool_calls:
-                    if t["name"] == "start_deep_research":
-                        tool_call = t
-                        break
-                response.tool_calls = [tool_call]
-
-            command = await get_tool(tool_call["name"], config).ainvoke(
-                tool_call["args"]
-            )
-            return Command(
-                update={
-                    "general_assistant_messages": [response],
-                    "deep_research_tool_call_id": tool_call["id"],
-                    **command.update,
-                },
-                goto=command.goto,
-            )
-        else:  # general tool calls like web_search
-            results = await asyncio.gather(
-                *[
-                    get_tool(tool_call["name"], config).ainvoke(
-                        tool_call["args"], config=config
-                    )
-                    for tool_call in tool_calls
-                ]
-            )
-            result_msgs = [
-                ToolMessage(
-                    content=result, tool_call_id=tool_call["id"], name=tool_call["name"]
+                return Command(
+                    update={
+                        "general_assistant_messages": [response],
+                        "deep_research_tool_call_id": tool_call["id"],
+                        **command.update,
+                    },
+                    goto=command.goto,
                 )
-                for result, tool_call in zip(results, tool_calls)
+            
+        # general tool calls like web_search
+        results = await asyncio.gather(
+            *[
+                get_tool(tool_call["name"], config).ainvoke(
+                    tool_call["args"], config=config
+                )
+                for tool_call in tool_calls
             ]
-
-            return Command(
-                update={"general_assistant_messages": [response, *result_msgs]},
-                goto="general_assistant",
+        )
+        result_msgs = [
+            ToolMessage(
+                content=result, tool_call_id=tool_call["id"], name=tool_call["name"]
             )
+            for result, tool_call in zip(results, tool_calls)
+        ]
+
+        return Command(
+            update={"general_assistant_messages": [response, *result_msgs]},
+            goto="general_assistant",
+        )
 
     else:  # no tool calls, clarification/direct answer
         # plain response, end this invocation with the response
