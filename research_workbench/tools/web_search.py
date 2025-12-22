@@ -8,6 +8,7 @@ from loguru import logger
 
 from config import Configuration, SearchEngine
 
+
 def get_search_tool(configuration: Configuration) -> BaseTool:
     if configuration.search_engine == SearchEngine.TAVILY:
         return get_tavily_search_tool()
@@ -15,6 +16,7 @@ def get_search_tool(configuration: Configuration) -> BaseTool:
         return searx_search
     else:
         raise ValueError(f"Invalid search engine: {configuration.search_engine}")
+
 
 _TAVILY_SEARCH_TOOL: Optional[TavilySearch] = None
 
@@ -50,7 +52,7 @@ async def tavily_search(
         start_date: Will return all results after the specified start date based on publish date or last updated date. Required to be written in the format YYYY-MM-DD.
         end_date: Will return all results before the specified end date based on publish date or last updated date. Required to be written in the format YYYY-MM-DD.
     Returns:
-        The formatted search results.
+        The formatted search results, containing title, url, and preview content if available.
     """
     logger.debug(
         f'web_search: Searching for "{query}" with time_range={time_range}, topic={topic}, start_date={start_date}, end_date={end_date}'
@@ -82,6 +84,7 @@ async def tavily_search(
 
 _SEARX_SEARCH_WRAPPER: Optional[SearxSearchWrapper] = None
 
+
 def get_searx_search_wrapper(configuration: Configuration) -> SearxSearchWrapper:
     """Lazily initialize Searx tool to avoid import-time failures."""
     global _SEARX_SEARCH_WRAPPER
@@ -89,26 +92,51 @@ def get_searx_search_wrapper(configuration: Configuration) -> SearxSearchWrapper
         _SEARX_SEARCH_WRAPPER = SearxSearchWrapper(searx_host=configuration.searx_host)
     return _SEARX_SEARCH_WRAPPER
 
+
 @tool("web_search")
 async def searx_search(
     query: str,
-    config: RunnableConfig,
+    pageno: int = 1,
+    time_range: Optional[Literal["day", "month", "year"]] = None,
+    config: RunnableConfig = None,
 ) -> str:
     """
-    A search engine.
+    The SearXNG search engine. Useful for when you need to answer questions about current events.
     Useful for when you need extra context or to answer questions about current events.
     Args:
-        query: The search query.
+        query: The search query. This string is passed to external search services.
+        pageno: Search page number. More results can be obtained by increasing the page number for the same query.
+        time_range: Time range of search for engines which support it. Don't specify it if you don't need it.
     Returns:
-        The formatted search results.
+        The formatted search results containing title, url, and preview content if available.
     """
     logger.debug(f"searx_search: {query = }")
     configuration = Configuration.from_runnable_config(config)
 
-    raw_results = await get_searx_search_wrapper(configuration).aresults(query, configuration.search_engine_max_results)
+    if pageno < 1:
+        return "Error: Page number must be greater than or equal to 1."
+    if time_range is not None and time_range not in {"day", "month", "year"}:
+        return "Error: Time range must be one of 'day', 'month', or 'year'."
+
+    param_dict = {
+        "query": query,
+        "num_results": configuration.search_engine_max_results,
+        "pageno": pageno,
+    }
+    if time_range in {"day", "month", "year"}:
+        param_dict["time_range"] = time_range
+
+    raw_results = await get_searx_search_wrapper(configuration).aresults(**param_dict)
+    if len(raw_results) == 1 and raw_results[0].get("Result"):
+        return "No search result found!"
+    
     results_str = "" if raw_results else "No search result found!"
     for result in raw_results:
-        title, url, content = result.get("title", "No Title"), result.get("link", "No Link"), result.get("snippet", "No Preview")
+        title, url, content = (
+            result.get("title", "No Title"),
+            result.get("link", "No Link"),
+            result.get("snippet", "No Preview"),
+        )
         results_str += f"Title: {title}\nURL: {url}\nContent: {content}"
         results_str += "\n----\n"
     return results_str

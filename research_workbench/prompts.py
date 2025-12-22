@@ -35,6 +35,7 @@ Evaluate the user's latest query and conversation history to determine the next 
 `web_search`:
 - Use this for quick, specific data points or "sanity checks" on current events.
 - If you intend to start Deep Research but lack basic context (e.g., definitions of terms), use this tool *first* to frame the Deep Research query better.
+- Queries should be orthogonal to each other.
 
 `start_deep_research`:
 - **CRITICAL WARNING**: This tool is expensive and time-consuming. Never use it for simple fact-checking or questions that can be answered in 1-2 search queries.
@@ -103,6 +104,7 @@ The argument you pass to `start_research` is critical. Do not simply ask a quest
 - **Treat the argument as a concise research proposal.**
 - It must be **comprehensive**: Include background context, specific constraints, definitions, and the desired format of the findings.
 - It must be **specific**: Clearly define what the sub-agent should look for to avoid generic results.
+- Each research proposal should be independent and orthogonal (to save time and resources) to each other.
 
 ### 4. REVIEW & DECISION
 As sub-agents return their findings, analyze the data:
