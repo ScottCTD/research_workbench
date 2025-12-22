@@ -16,6 +16,7 @@ from langgraph.graph import END, START, StateGraph, add_messages
 from langgraph.types import Command
 from loguru import logger
 from tools.web_search import get_search_tool
+from tools.web_extract import web_extract
 
 _MODEL: Optional[BaseChatModel] = None
 
@@ -70,10 +71,9 @@ async def start_research(research_proposal: str, config: RunnableConfig) -> str:
     Returns:
         Synthesized research findings.
     """
-    configuration = Configuration.from_runnable_config(config)
     react_agent = create_agent(
         model=get_model(),
-        tools=[get_search_tool(configuration)],
+        tools=[get_tool("web_search", config), get_tool("web_extract", config)],
         system_prompt=prompts.RESEARCHER_SYSTEM_PROMPT.format(
             date=get_formatted_date()
         ),
@@ -111,6 +111,8 @@ def get_tool(name: str, config: RunnableConfig) -> BaseTool:
         return start_research
     elif name == "write_report":
         return write_report
+    elif name == "web_extract":
+        return web_extract
     else:
         raise ValueError(f"Invalid tool name: {name}")
 
@@ -125,7 +127,7 @@ async def node_general_assistant(state: AgentState, config: RunnableConfig):
     ]
 
     general_assistant_model = get_model().bind_tools(
-        [get_tool("web_search", config), get_tool("start_deep_research", config)]
+        [get_tool("web_search", config), get_tool("web_extract", config), get_tool("start_deep_research", config)]
     )
 
     response = await general_assistant_model.ainvoke(messages)
@@ -199,7 +201,6 @@ async def node_general_assistant(state: AgentState, config: RunnableConfig):
 
 
 async def node_planner(state: AgentState, config: RunnableConfig):
-    configuration = Configuration.from_runnable_config(config)
     system_prompt = prompts.PLANNER_SYSTEM_PROMPT.format(date=get_formatted_date())
     existing_history = state.get("planner_messages", [])
     seed_messages: List[AnyMessage] = []
@@ -218,6 +219,7 @@ async def node_planner(state: AgentState, config: RunnableConfig):
     planner_model = get_model().bind_tools(
         [
             get_tool("web_search", config),
+            get_tool("web_extract", config),
             get_tool("start_research", config),
             get_tool("write_report", config),
         ]
@@ -275,7 +277,6 @@ async def node_planner(state: AgentState, config: RunnableConfig):
 
 
 async def node_write_report(state: AgentState, config: RunnableConfig):
-    configuration = Configuration.from_runnable_config(config)
     report_writer_model = get_model()
 
     # synthesize the research trajectory

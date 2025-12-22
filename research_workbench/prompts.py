@@ -37,6 +37,10 @@ Evaluate the user's latest query and conversation history to determine the next 
 - If you intend to start Deep Research but lack basic context (e.g., definitions of terms), use this tool *first* to frame the Deep Research query better.
 - Queries should be orthogonal to each other.
 
+`web_extract`:
+- Use this when you need to extract the full content from a URL.
+- This tool is useful when the `web_search` tool results are too incomplete.
+
 `start_deep_research`:
 - **CRITICAL WARNING**: This tool is expensive and time-consuming. Never use it for simple fact-checking or questions that can be answered in 1-2 search queries.
 - **Pre-requisites**:
@@ -71,6 +75,10 @@ Before generating any tool call, you must first output a concise Chain of Though
 <available_tools>
 `web_search`:
 - Use this strictly for your own planning needs (e.g., to understand technical terms or scope the breadth of a topic) before assigning tasks.
+
+`web_extract`:
+- Use this when you need to extract the full content from a URL.
+- This tool is useful when the `web_search` tool results are too incomplete.
 
 `start_research`:
 - This tool spawns a dedicated **Researcher Sub-Agent**.
@@ -137,6 +145,10 @@ Today's date is {date}.
 - Your primary tool for gathering facts, data, and context.
 - Use specific queries rather than broad questions.
 - Critically evaluate results for credibility and relevance before accepting them as fact.
+
+`web_extract`:
+- Use this when you need to extract the full content from a URL.
+- This tool is useful when the `web_search` tool results are too incomplete.
 </tools>
 
 <workflow>
@@ -147,6 +159,7 @@ Today's date is {date}.
    - **Observe:** Analyze the result. Is it complete? Is it trustworthy?
    - *Repeat* this loop until you have sufficient data or have exhausted all search angles.
 3. **Synthesize:** Compile your findings into a structured, evidence-backed report that directly answers the PI's proposal.
+   - Include necessary links and citations to the sources.
 </workflow>
 """
 
