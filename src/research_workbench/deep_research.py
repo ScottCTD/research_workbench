@@ -371,12 +371,14 @@ async def node_write_report(state: AgentState, config: RunnableConfig):
         update={
             "final_report": response.content,
             "general_assistant_messages": [assistant_tool_result],
+            "planner_messages": [],
         },
         goto="general_assistant",
     )
 
 
-async def main(initial_user_query: Optional[str] = None):
+
+def get_graph():
     graph_builder = StateGraph(AgentState)
     graph_builder.add_node("general_assistant", node_general_assistant)
     graph_builder.add_node("planner", node_planner)
@@ -384,7 +386,11 @@ async def main(initial_user_query: Optional[str] = None):
 
     graph_builder.add_edge(START, "general_assistant")
 
-    graph = graph_builder.compile(checkpointer=InMemorySaver())
+    return graph_builder.compile(checkpointer=InMemorySaver())
+
+
+async def main(initial_user_query: Optional[str] = None):
+    graph = get_graph()
 
     config = {"configurable": {"thread_id": "main"}, "recursion_limit": 196}
 
