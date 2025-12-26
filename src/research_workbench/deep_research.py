@@ -2,6 +2,7 @@ import asyncio
 import json
 from collections import Counter
 from datetime import datetime
+import os
 from typing import Annotated, List, Optional, TypedDict
 
 from langchain.agents import create_agent
@@ -27,6 +28,12 @@ def get_model() -> BaseChatModel:
     global _MODEL
     if _MODEL is None:
         _MODEL = init_chat_model(model="xai:grok-4-1-fast-non-reasoning")
+        # _MODEL = init_chat_model(
+        #     model="openai-gpt-oss-120b",
+        #     model_provider="openai",
+        #     base_url="https://inference.do-ai.run/v1/",
+        #     api_key=os.environ.get("DIGITALOCEAN_INFERENCE_KEY"),
+        # )
     return _MODEL
 
 
@@ -379,7 +386,7 @@ async def main(initial_user_query: Optional[str] = None):
 
     graph = graph_builder.compile(checkpointer=InMemorySaver())
 
-    config = {"configurable": {"thread_id": "main"}}
+    config = {"configurable": {"thread_id": "main"}, "recursion_limit": 196}
 
     user = initial_user_query or input("You: ").strip()
     while True:
