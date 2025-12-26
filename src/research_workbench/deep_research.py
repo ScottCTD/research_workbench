@@ -1,23 +1,23 @@
 import asyncio
 import json
-from datetime import datetime
-from typing import Annotated, List, Literal, Optional, TypedDict
 from collections import Counter
+from datetime import datetime
+from typing import Annotated, List, Optional, TypedDict
 
-import prompts
-from config import Configuration
 from langchain.agents import create_agent
 from langchain.chat_models import BaseChatModel, init_chat_model
 from langchain.tools import BaseTool, tool
 from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
-from langchain_tavily.tavily_search import TavilySearch
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph, add_messages
 from langgraph.types import Command
 from loguru import logger
-from tools.web_search import get_search_tool
-from tools.web_extract import web_extract
+
+import research_workbench.prompts as prompts
+from research_workbench.config import Configuration
+from research_workbench.tools.web_extract import web_extract
+from research_workbench.tools.web_search import get_search_tool
 
 _MODEL: Optional[BaseChatModel] = None
 
@@ -73,6 +73,7 @@ def dummy_call_deep_research(msg: str):
         The message to return.
     """
     return msg
+
 
 @tool
 async def start_research(research_proposal: str, config: RunnableConfig) -> str:
@@ -141,7 +142,11 @@ async def node_general_assistant(state: AgentState, config: RunnableConfig):
     ]
 
     general_assistant_model = get_model().bind_tools(
-        [get_tool("web_search", config), get_tool("web_extract", config), get_tool("start_deep_research", config)]
+        [
+            get_tool("web_search", config),
+            get_tool("web_extract", config),
+            get_tool("start_deep_research", config),
+        ]
     )
 
     response = await general_assistant_model.ainvoke(messages)
@@ -150,7 +155,7 @@ async def node_general_assistant(state: AgentState, config: RunnableConfig):
 
     if tool_calls:
         names = Counter(tool_call["name"] for tool_call in tool_calls)
-        
+
         # if start_deep_research is called more than once, we need to notify the model to only call it once and execute other tool calls normally
         if names["start_deep_research"] > 1:
             logger.warning(
@@ -159,14 +164,20 @@ async def node_general_assistant(state: AgentState, config: RunnableConfig):
             for tool_call in tool_calls:
                 if tool_call["name"] == "start_deep_research":
                     tool_call["name"] = "dummy_call_deep_research"
-                    tool_call["args"] = {"msg": "Please call start_deep_research only once."}
+                    tool_call["args"] = {
+                        "msg": "Please call start_deep_research only once."
+                    }
         elif names["start_deep_research"] == 1:
             if len(tool_calls) > 1:
-                logger.warning("general_assistant: start_deep_research is called only once, but other tool calls are also present! Notifying the model to execute deep_research tool solely.")
+                logger.warning(
+                    "general_assistant: start_deep_research is called only once, but other tool calls are also present! Notifying the model to execute deep_research tool solely."
+                )
                 for tool_call in tool_calls:
                     if tool_call["name"] == "start_deep_research":
                         tool_call["name"] = "dummy_call_deep_research"
-                        tool_call["args"] = {"msg": "If you want to start a deep research, start_deep_research should be your only tool call."}
+                        tool_call["args"] = {
+                            "msg": "If you want to start a deep research, start_deep_research should be your only tool call."
+                        }
             else:  # valid deep research tool call
                 tool_call = tool_calls[0]
                 command = await get_tool(tool_call["name"], config).ainvoke(
@@ -180,7 +191,7 @@ async def node_general_assistant(state: AgentState, config: RunnableConfig):
                     },
                     goto=command.goto,
                 )
-            
+
         # general tool calls like web_search
         results = await asyncio.gather(
             *[

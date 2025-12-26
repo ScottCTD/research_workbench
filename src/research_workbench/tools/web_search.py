@@ -1,12 +1,12 @@
 from typing import Literal, Optional
 
 from langchain.tools import BaseTool, tool
-from langchain_tavily.tavily_search import TavilySearch
 from langchain_community.utilities import SearxSearchWrapper
+from langchain_tavily.tavily_search import TavilySearch
 from langgraph.graph.state import RunnableConfig
 from loguru import logger
 
-from config import Configuration, SearchEngine
+from research_workbench.config import Configuration, SearchEngine
 
 
 def get_search_tool(configuration: Configuration) -> BaseTool:
