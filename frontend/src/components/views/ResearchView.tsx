@@ -17,7 +17,15 @@ export function ResearchView() {
 
             <div className="absolute top-4 right-4 z-10">
                 <button
-                    onClick={() => useStore.getState().setUiMode('focus')}
+                    onClick={() => {
+                        const state = useStore.getState();
+                        // Find the root/initial agent (usually general_assistant or the first one)
+                        const rootNode = Object.values(state.nodes).find(n => n.data.kind === 'general_assistant') || Object.values(state.nodes)[0];
+                        if (rootNode) {
+                            state.setActiveNode(rootNode.id);
+                        }
+                        state.setUiMode('focus');
+                    }}
                     className="bg-primary text-primary-foreground px-4 py-2 rounded shadow hover:bg-primary/90 transition-colors text-sm font-medium"
                 >
                     Back to Chat

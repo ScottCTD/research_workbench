@@ -4,6 +4,7 @@ export type ServerEvent =
     | { type: 'NODE_CREATED'; payload: { id: string; kind: AgentKind; title?: string } }
     | { type: 'EDGE_CREATED'; payload: { source: string; target: string; id?: string } }
     | { type: 'MESSAGE_APPENDED'; payload: Message }
+    | { type: 'MESSAGE_UPDATED'; payload: { id: string; content: string } }
     | { type: 'TOOL_UPDATED'; payload: { messageId: string; status?: ToolStatus; output?: any } }
     | { type: 'TOOL_STATUS_CHANGED'; payload: { messageId: string; status: ToolStatus } }
     | { type: 'ACTIVE_NODE_SET'; payload: { id: string } }

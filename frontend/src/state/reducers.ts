@@ -66,6 +66,17 @@ export function applyEvent(state: AppState, event: ServerEvent): Partial<AppStat
 
         case 'MESSAGE_APPENDED': {
             const msg = event.payload;
+            // Prevent duplicate message IDs in the list
+            const currentIds = state.nodeMessageIds[msg.nodeId] || [];
+            if (currentIds.includes(msg.id)) {
+                // If it already exists, just update the content (like MESSAGE_UPDATED)
+                return {
+                    messages: {
+                        ...state.messages,
+                        [msg.id]: msg,
+                    },
+                };
+            }
             return {
                 messages: {
                     ...state.messages,
@@ -73,8 +84,20 @@ export function applyEvent(state: AppState, event: ServerEvent): Partial<AppStat
                 },
                 nodeMessageIds: {
                     ...state.nodeMessageIds,
-                    [msg.nodeId]: [...(state.nodeMessageIds[msg.nodeId] || []), msg.id],
+                    [msg.nodeId]: [...currentIds, msg.id],
                 },
+            };
+        }
+
+        case 'MESSAGE_UPDATED': {
+            const { id, content } = event.payload;
+            const existingMsg = state.messages[id];
+            if (!existingMsg) return {};
+            return {
+                messages: {
+                    ...state.messages,
+                    [id]: { ...existingMsg, content: existingMsg.content + content }
+                }
             };
         }
 

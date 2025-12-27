@@ -21,10 +21,10 @@ export function Modal({ isOpen, onClose, title, children }: ModalProps) {
                         className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50"
                     />
                     <motion.div
-                        initial={{ opacity: 0, scale: 0.95, y: 10 }}
-                        animate={{ opacity: 1, scale: 1, y: 0 }}
-                        exit={{ opacity: 0, scale: 0.95, y: 10 }}
-                        className="fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg translate-x-[-50%] translate-y-[-50%] gap-4 border bg-background p-6 shadow-lg duration-200 sm:rounded-lg"
+                        initial={{ opacity: 0, scale: 0.95, x: "-50%", y: "-48%" }}
+                        animate={{ opacity: 1, scale: 1, x: "-50%", y: "-50%" }}
+                        exit={{ opacity: 0, scale: 0.95, x: "-50%", y: "-48%" }}
+                        className="fixed left-[50%] top-[50%] z-50 grid w-full max-w-lg gap-4 border bg-background p-6 shadow-lg duration-200 sm:rounded-lg"
                     >
                         <div className="flex flex-col space-y-1.5 text-center sm:text-left">
                             <div className="flex items-center justify-between">
@@ -35,7 +35,7 @@ export function Modal({ isOpen, onClose, title, children }: ModalProps) {
                                 </button>
                             </div>
                         </div>
-                        <div className="max-h-[60vh] overflow-y-auto">
+                        <div className="max-h-[80vh] overflow-y-auto">
                             {children}
                         </div>
                     </motion.div>

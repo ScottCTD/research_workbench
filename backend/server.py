@@ -115,124 +115,114 @@ async def run_research_task(topic: str):
     # For this MVP, let's just use astream and look at state snapshots or node outputs.
     # astream yields the output of the node that just finished.
     
+    # 3. Stream the Graph execution using astream_events (V2)
     logger.info(f"Starting research on: {topic}")
-    
-    # Track processed messages to avoid duplicates if we inspect full state
-    processed_msg_ids = {user_msg_id}
     
     # Map graph nodes to frontend node IDs
     node_mapping = {"general_assistant": ga_id}
     planner_id = None
     
-    # Initial input
-    inputs = {"general_assistant_messages": [HumanMessage(content=topic)]}
+    # Default current node
+    current_node_id = ga_id
 
-    async for event in graph.astream(inputs, config=config, stream_mode="updates"):
-        # event is a dict like { 'node_name': { 'key': value } }
-        for node_name, updates in event.items():
-            logger.info(f"Node finished: {node_name}")
-            
-            # Determine the current frontend node ID
-            current_node_id = node_mapping.get(node_name)
-            
-            # Setup Planner node if needed
-            if node_name == "planner" and "planner" not in node_mapping:
+    # Track runs to avoid processing "Generic" chains that are not relevant
+    # We focus on chat models and tools.
+    processed_msg_ids = {user_msg_id}
+    inputs = {"general_assistant_messages": [HumanMessage(content=topic)]}
+    
+    async for event in graph.astream_events(inputs, config=config, version="v2"):
+        kind = event["event"]
+        name = event["name"]
+        run_id = event["run_id"]
+        
+        # 1. Update Current Node Context
+        # We rely on 'langgraph_node' metadata. 
+        # CAUTION: Nested agents (start_research) might not have 'langgraph_node' set to 'planner' explicitly 
+        # if they are in a sub-graph. But usually 'planner' stays active.
+        # We'll use a heuristic: if we see 'langgraph_node' change to 'planner', we update.
+        meta = event.get("metadata", {})
+        lg_node = meta.get("langgraph_node")
+        
+        if lg_node == "planner":
+            if "planner" not in node_mapping:
                 planner_id = "planner-1"
                 node_mapping["planner"] = planner_id
                 await emit_event("NODE_CREATED", {"id": planner_id, "kind": "planner", "title": "Research Planner"})
                 await emit_event("EDGE_CREATED", {"source": ga_id, "target": planner_id})
                 await emit_event("ACTIVE_NODE_SET", {"id": planner_id})
-                # Switch UI mode to research
                 await emit_event("UI_MODE_SET", {"mode": "research"})
-                current_node_id = planner_id
-            
-            if node_name == "general_assistant":
-                 await emit_event("ACTIVE_NODE_SET", {"id": ga_id})
-
-            if node_name == "write_report" and "write_report" not in node_mapping:
-                 # Usually write_report goes back to GA, but if we wanted a node:
-                 pass
-
-            # Extract messages from the updates
-            # The structure of updates depends on the node's return value.
-            # In deep_research.py, they return Command(update={ "key": [...] })
-            # astream(stream_mode="updates") yields the update dict.
-            
-            msgs = []
-            if "general_assistant_messages" in updates:
-                msgs = updates["general_assistant_messages"]
-            elif "planner_messages" in updates:
-                msgs = updates["planner_messages"]
+            current_node_id = node_mapping["planner"]
+        elif lg_node == "general_assistant":
+            current_node_id = node_mapping.get("general_assistant", ga_id)
+        
+        # 2. Handle Events
+        
+        # A. Chat Model Streaming (Text)
+        if kind == "on_chat_model_stream":
+            chunk = event["data"]["chunk"]
+            # Only process if there is content (ignore tool call chunks for message text)
+            if chunk.content:
+                content = chunk.content
+                # Check if we've seen this run_id before.
+                # Since we don't keep checking a set for 'MESSAGE_UPDATED', checking 'processed_msg_ids' 
+                # helps us decide if we Append (idx 0) or Update.
+                # Actually, frontend reducer handles duplication safely now, but best valid logic is:
+                # First time -> Append (empty or first chunk), Subsequent -> Update.
                 
-            # 'msgs' could be a list or a single message depending on how `add_messages` works
-            if not isinstance(msgs, list):
-                msgs = [msgs]
-            
-            for m in msgs:
-                if not isinstance(m, BaseMessage):
-                    continue
-                    
-                # HACK: dedup based on content hash or similar if ID not present? 
-                # LangChain messages usually have 'id' if persistent, but here they might be new.
-                # Let's simple check if we've seen this object or create a new ID.
-                if hasattr(m, "id") and m.id and m.id in processed_msg_ids:
-                    continue
-                
-                mid = getattr(m, "id", None) or str(uuid.uuid4())
-                processed_msg_ids.add(mid)
-                
-                kind = "assistant"
-                if isinstance(m, HumanMessage): kind = "human"
-                elif isinstance(m, ToolMessage): kind = "tool"
-                
-                try:
-                    # Emit flatten message matching frontend Message interface
-                    payload = {
-                        "id": mid,
+                # We'll use a local set to track initialized message IDs for this stream loop
+                if run_id not in processed_msg_ids:
+                    processed_msg_ids.add(run_id)
+                    await emit_event("MESSAGE_APPENDED", {
+                        "id": run_id,
                         "nodeId": current_node_id,
-                        "kind": kind,
-                        "content": str(m.content),
+                        "kind": "assistant",
+                        "content": content,
                         "timestamp": 0
-                    }
-                    
-                    # Handle Tool Calls
-                    if hasattr(m, "tool_calls") and m.tool_calls:
-                        # 1. Emit text part if any
-                        if m.content:
-                             await emit_event("MESSAGE_APPENDED", payload)
+                    })
+                else:
+                    await emit_event("MESSAGE_UPDATED", {
+                        "id": run_id,
+                        "content": content
+                    })
 
-                        # 2. Emit tool calls
-                        for tc in m.tool_calls:
-                            tc_id = tc["id"]
-                            tool_msg_payload = {
-                                "id": tc_id,
-                                "nodeId": current_node_id,
-                                "kind": "tool",
-                                "content": "", # Tool call bubble info is in toolCall
-                                "toolCall": {
-                                    "toolName": tc["name"],
-                                    "toolCallId": tc["id"],
-                                    "input": tc["args"], # Mapped to 'input' for frontend
-                                    "status": "running",
-                                    "timestamp": 0
-                                },
-                                "timestamp": 0
-                            }
-                            await emit_event("MESSAGE_APPENDED", tool_msg_payload)
-                    
-                    elif isinstance(m, ToolMessage):
-                        # Update the status of the tool call
-                        await emit_event("TOOL_UPDATED", {
-                            "messageId": m.tool_call_id,
-                            "status": "success",
-                            "output": str(m.content)
-                        })
-                    else:
-                        # Normal message
-                        await emit_event("MESSAGE_APPENDED", payload)
-                except Exception as e:
-                    logger.error(f"Error processing message {mid}: {e}")
-    
+        # B. Tool Start
+        elif kind == "on_tool_start":
+            # Filter out internal LangChain tools or trivial ones if needed.
+            # We want to show 'web_search', 'start_research', etc.
+            # We skip 'start_deep_research' wrapper if we want, but actually it's fine to show it.
+            tool_data = event["data"].get("input")
+            
+            processed_msg_ids.add(run_id)
+            await emit_event("MESSAGE_APPENDED", {
+                "id": run_id,
+                "nodeId": current_node_id,
+                "kind": "tool",
+                "content": f"Running {name}...",
+                "toolCall": {
+                    "toolName": name,
+                    "toolCallId": run_id,
+                    "input": tool_data,
+                    "status": "running",
+                    "timestamp": 0
+                },
+                "timestamp": 0
+            })
+
+        # C. Tool End
+        elif kind == "on_tool_end":
+            output = event["data"].get("output")
+            # Output can be ToolMessage or string or dict.
+            # We sanitize it for display.
+            output_str = str(output)
+            if hasattr(output, "content"):
+                output_str = str(output.content)
+            
+            await emit_event("TOOL_UPDATED", {
+                "messageId": run_id,
+                "status": "success", # or error if we detect it
+                "output": output_str
+            })
+            
     await emit_event("WORKFLOW_COMPLETED", {})
 
 async def continue_research_task(message: str):
@@ -243,16 +233,7 @@ async def continue_research_task(message: str):
     if not active_thread_id:
         return
 
-    # In a real app we would persist "is_mock" state. 
-    # For MVP, we can just check if we are in a 'test_mock' flow or use a global flag.
-    # Let's check a global flag for simplicity or just try to get graph.
-    # Hack: If the active thread was created by mock, we should use mock.
-    # But since we re-get graph here, we need to know.
-    # Quick fix: If message is "test_mock" (unlikely in chat) or we store it.
-    
-    # Better: Global 'is_active_session_mock'
     global is_active_session_mock
-    
     if is_active_session_mock:
          graph = MockGraph()
     else:
@@ -260,11 +241,8 @@ async def continue_research_task(message: str):
 
     config = {"configurable": {"thread_id": active_thread_id}}
     
-    # 1. Emit User Message
+    # Emit User Message
     user_msg_id = str(uuid.uuid4())
-    # We need to know the active node to append message to... 
-    # For MVP assume we are chatting with General Assistant (ga-1)
-    # Ideally frontend sends activeNodeId with request.
     ga_id = "ga-1" 
     
     await emit_event("MESSAGE_APPENDED", {
@@ -278,69 +256,75 @@ async def continue_research_task(message: str):
     logger.info(f"Continuing research with: {message}")
     
     node_mapping = {"general_assistant": ga_id, "planner": "planner-1"} 
-    processed_msg_ids = {user_msg_id} # simple local dedup for this run
+    processed_msg_ids = {user_msg_id} 
+    current_node_id = ga_id
     
     inputs = {"general_assistant_messages": [HumanMessage(content=message)]}
 
-    async for event in graph.astream(inputs, config=config, stream_mode="updates"):
-        for node_name, updates in event.items():
-            logger.info(f"Node finished: {node_name}")
-            current_node_id = node_mapping.get(node_name, ga_id)
+    async for event in graph.astream_events(inputs, config=config, version="v2"):
+        kind = event["event"]
+        name = event["name"]
+        run_id = event["run_id"]
+        
+        meta = event.get("metadata", {})
+        lg_node = meta.get("langgraph_node")
+        
+        if lg_node == "planner":
+             current_node_id = node_mapping.get("planner", "planner-1")
+        elif lg_node == "general_assistant":
+             current_node_id = node_mapping.get("general_assistant", ga_id)
 
-            msgs = []
-            if "general_assistant_messages" in updates:
-                msgs = updates["general_assistant_messages"]
-            elif "planner_messages" in updates:
-                msgs = updates["planner_messages"]
-                
-            if not isinstance(msgs, list): msgs = [msgs]
-            
-            for m in msgs:
-                if not isinstance(m, BaseMessage): continue
-                
-                mid = getattr(m, "id", None) or str(uuid.uuid4())
-                if mid in processed_msg_ids: continue
-                processed_msg_ids.add(mid)
-                
-                kind = "assistant"
-                if isinstance(m, HumanMessage): kind = "human"
-                elif isinstance(m, ToolMessage): kind = "tool"
-                
-                payload = {
-                    "id": mid,
-                    "nodeId": current_node_id,
-                    "kind": kind,
-                    "content": str(m.content),
-                    "timestamp": 0
-                }
-                
-                if hasattr(m, "tool_calls") and m.tool_calls:
-                    if m.content: await emit_event("MESSAGE_APPENDED", payload)
-                    for tc in m.tool_calls:
-                        tc_id = tc["id"]
-                        tool_msg_payload = {
-                            "id": tc_id,
-                            "nodeId": current_node_id,
-                            "kind": "tool",
-                            "content": "",
-                            "toolCall": {
-                                "toolName": tc["name"],
-                                "toolCallId": tc["id"],
-                                "input": tc["args"],
-                                "status": "running",
-                                "timestamp": 0
-                            },
-                            "timestamp": 0
-                        }
-                        await emit_event("MESSAGE_APPENDED", tool_msg_payload)
-                elif isinstance(m, ToolMessage):
-                    await emit_event("TOOL_UPDATED", {
-                        "messageId": m.tool_call_id,
-                        "status": "success",
-                        "output": str(m.content)
+        # A. Chat Model Streaming (Text)
+        if kind == "on_chat_model_stream":
+            chunk = event["data"]["chunk"]
+            if chunk.content:
+                content = chunk.content
+                if run_id not in processed_msg_ids:
+                    processed_msg_ids.add(run_id)
+                    await emit_event("MESSAGE_APPENDED", {
+                        "id": run_id,
+                        "nodeId": current_node_id,
+                        "kind": "assistant",
+                        "content": content,
+                        "timestamp": 0
                     })
                 else:
-                    await emit_event("MESSAGE_APPENDED", payload)
+                    await emit_event("MESSAGE_UPDATED", {
+                        "id": run_id,
+                        "content": content
+                    })
+
+        # B. Tool Start
+        elif kind == "on_tool_start":
+            tool_data = event["data"].get("input")
+            processed_msg_ids.add(run_id)
+            await emit_event("MESSAGE_APPENDED", {
+                "id": run_id,
+                "nodeId": current_node_id,
+                "kind": "tool",
+                "content": f"Running {name}...",
+                "toolCall": {
+                    "toolName": name,
+                    "toolCallId": run_id,
+                    "input": tool_data,
+                    "status": "running",
+                    "timestamp": 0
+                },
+                "timestamp": 0
+            })
+
+        # C. Tool End
+        elif kind == "on_tool_end":
+            output = event["data"].get("output")
+            output_str = str(output)
+            if hasattr(output, "content"):
+                output_str = str(output.content)
+            
+            await emit_event("TOOL_UPDATED", {
+                "messageId": run_id,
+                "status": "success",
+                "output": output_str
+            })
 
 @app.post("/api/research")
 async def start_research(request: ResearchRequest):

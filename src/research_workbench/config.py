@@ -14,7 +14,7 @@ class SearchEngine(Enum):
 @dataclass
 class Configuration:
 
-    search_engine: SearchEngine = SearchEngine.SEARX
+    search_engine: SearchEngine = SearchEngine.TAVILY
     search_engine_max_results: int = 10
     searx_host: Optional[str] = "http://localhost:8001"
 

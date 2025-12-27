@@ -1,228 +1,176 @@
 
 import asyncio
 import uuid
-from typing import Any, Dict
-from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+import time
+from typing import Any, Dict, AsyncGenerator
 
 class MockGraph:
     """
-    Simulates a LangGraph compiled graph for Deep Research.
-    Generates a fixed sequence of events to test the UI.
+    Simulates a LangGraph compiled graph for Deep Research using the V2 astream_events API.
+    Provides a complex, multi-step research scenario.
     """
     def __init__(self):
         pass
 
-    async def astream(self, inputs: Dict[str, Any], config: Dict[str, Any], stream_mode: str = "updates"):
+    async def astream_events(self, inputs: Dict[str, Any], config: Dict[str, Any], version: str = "v2") -> AsyncGenerator[Dict[str, Any], None]:
         """
-        Simulates the streaming of graph events.
+        Simulates the streaming of granular graph events (V2 API).
         """
-        topic = "Unknown Topic"
-        if "general_assistant_messages" in inputs:
-            last_msg = inputs["general_assistant_messages"][-1]
-            if isinstance(last_msg, HumanMessage):
-                topic = last_msg.content
+        run_id_map = {}
+        
+        def get_run_id(key: str) -> str:
+            if key not in run_id_map:
+                run_id_map[key] = str(uuid.uuid4())
+            return run_id_map[key]
 
-        # 1. General Assistant acknowledgment and deep research tool call
-        yield {
-            "general_assistant": {
-                "general_assistant_messages": [
-                    AIMessage(
-                        content=(
-                            "I will start a deep research workflow. I'll outline a plan, "
-                            "run searches, and synthesize a report."
-                        )
-                    )
-                ]
-            }
-        }
-        await asyncio.sleep(1.2)
+        async def yield_text(content: str, run_id: str, name: str, node: str):
+            # Split text effectively to simulate token streaming
+            tokens = content.split(" ")
+            
+            # Construct chunk object structure similar to LangChain's AIMessageChunk
+            class MockChunk:
+                def __init__(self, txt):
+                    self.content = txt
+            
+            for i, token in enumerate(tokens):
+                # Add space if not last
+                chunk_text = token + (" " if i < len(tokens) - 1 else "")
+                
+                yield {
+                    "event": "on_chat_model_stream",
+                    "name": name,
+                    "run_id": run_id,
+                    "metadata": {"langgraph_node": node},
+                    "data": {"chunk": MockChunk(chunk_text)}
+                }
+                await asyncio.sleep(0.05) # fast typing
 
-        deep_research_call_id = str(uuid.uuid4())
-        yield {
-            "general_assistant": {
-                "general_assistant_messages": [
-                    AIMessage(
-                        content="",
-                        tool_calls=[{
-                            "name": "start_deep_research",
-                            "args": {"query": topic},
-                            "id": deep_research_call_id
-                        }]
-                    )
-                ]
+        async def yield_tool_start(name: str, args: Dict, run_id: str, node: str):
+            yield {
+                "event": "on_tool_start",
+                "name": name,
+                "run_id": run_id,
+                "metadata": {"langgraph_node": node},
+                "data": {"input": args}
             }
-        }
-        await asyncio.sleep(0.8)
+            await asyncio.sleep(0.5)
 
-        # 2. Planner Node - plan and initial tool calls
-        yield {
-            "planner": {
-                "planner_messages": [
-                    AIMessage(
-                        content=(
-                            "**Research Plan**\n"
-                            "1. Identify key sources and benchmarks.\n"
-                            "2. Extract primary facts and constraints.\n"
-                            "3. Synthesize findings into a structured report."
-                        )
-                    )
-                ]
+        async def yield_tool_end(name: str, output: Any, run_id: str, node: str):
+            yield {
+                "event": "on_tool_end",
+                "name": name,
+                "run_id": run_id,
+                "metadata": {"langgraph_node": node},
+                "data": {"output": output}
             }
-        }
-        await asyncio.sleep(1.5)
+            await asyncio.sleep(0.5)
 
-        # 3. Planner executes web_search
-        search_call_id = str(uuid.uuid4())
-        yield {
-            "planner": {
-                "planner_messages": [
-                    AIMessage(
-                        content="Running initial searches for sources and benchmarks.",
-                        tool_calls=[{
-                            "name": "web_search",
-                            "args": {"query": f"{topic} benchmarks and evaluations"},
-                            "id": search_call_id
-                        }]
-                    )
-                ]
-            }
-        }
-        await asyncio.sleep(1.2)
+        # === SCENARIO START ===
+        
+        # 1. General Assistant (GA)
+        # -------------------------
+        ga_run_id = get_run_id("ga_turn_1")
+        async for e in yield_text(
+            "I'll start a deep research process on Liquid Neural Networks to uncover their architecture and use cases.",
+            ga_run_id, "Grok", "general_assistant"
+        ): yield e
+        
+        # GA calls start_deep_research
+        dr_tool_id = get_run_id("start_deep_research")
+        async for e in yield_tool_start("start_deep_research", {"query": "Liquid Neural Networks"}, dr_tool_id, "general_assistant"): yield e
+        
+        # 2. Planner
+        # ----------
+        # Planner receives the ball
+        planner_run_id = get_run_id("planner_msg_1")
+        async for e in yield_text(
+            "I am generating a research plan. I will investigate the core architecture of LNNs and then look into their robotic control applications.",
+            planner_run_id, "Grok", "planner"
+        ): yield e
 
-        yield {
-            "planner": {
-                "planner_messages": [
-                    ToolMessage(
-                        content=(
-                            "[Mock Search Results]\n"
-                            "- Benchmark A summary\n"
-                            "- Benchmark B summary\n"
-                            "- Industry whitepaper overview"
-                        ),
-                        tool_call_id=search_call_id,
-                        name="web_search"
-                    )
-                ]
-            }
-        }
-        await asyncio.sleep(1.0)
+        # 3. Researcher 1: Architecture
+        # -----------------------------
+        # Planner calls start_research (Nested Agent)
+        res1_tool_id = get_run_id("res1_call")
+        async for e in yield_tool_start("start_research", {"proposal": "Investigate LNN Architecture (LTCs)"}, res1_tool_id, "planner"): yield e
 
-        # 4. Planner executes web_extract for a key source
-        extract_call_id = str(uuid.uuid4())
-        yield {
-            "planner": {
-                "planner_messages": [
-                    AIMessage(
-                        content="Extracting details from a primary source.",
-                        tool_calls=[{
-                            "name": "web_extract",
-                            "args": {"url": "https://example.com/deep-research-source"},
-                            "id": extract_call_id
-                        }]
-                    )
-                ]
-            }
-        }
-        await asyncio.sleep(1.2)
+        # Start streaming events *as* the nested agent (which runs under planner's scope usually)
+        # We simulate the inner workings:
+        res1_run_id = get_run_id("res1_inner_thought")
+        async for e in yield_text(
+            "Searching for Liquid Time-constant Networks papers and documentation...",
+            res1_run_id, "Grok", "planner"
+        ): yield e
+        
+        # Inner Tool: Web Search
+        ws1_id = get_run_id("web_search_1")
+        async for e in yield_tool_start("web_search", {"query": "Liquid Time-constant Networks architecture"}, ws1_id, "planner"): yield e
+        async for e in yield_tool_end("web_search", 
+            "Found papers by Ramin Hasani/MIT CSAIL. Key concept: equations that adapt to time-series ticks.", 
+            ws1_id, "planner"
+        ): yield e
+        
+        # Inner Tool: Web Extract
+        we1_id = get_run_id("web_extract_1")
+        async for e in yield_tool_start("web_extract", {"url": "https://arxiv.org/abs/2006.04439"}, we1_id, "planner"): yield e
+        async for e in yield_tool_end("web_extract", "Abstract: LTCs exhibit stable behavior and superior expressivity...", we1_id, "planner"): yield e
+        
+        # Researcher 1 Conclusion
+        async for e in yield_tool_end("start_research", 
+            "Liquid Neural Networks (LNNs) are based on Liquid Time-constant (LTC) layers. They are causal, continuous-time RNNs.", 
+            res1_tool_id, "planner"
+        ): yield e
 
-        yield {
-            "planner": {
-                "planner_messages": [
-                    ToolMessage(
-                        content=(
-                            "[Mock Extract]\n"
-                            "Key metrics, constraints, and comparative notes extracted."
-                        ),
-                        tool_call_id=extract_call_id,
-                        name="web_extract"
-                    )
-                ]
-            }
-        }
-        await asyncio.sleep(1.0)
+        # 4. Researcher 2: Applications
+        # -----------------------------
+        res2_tool_id = get_run_id("res2_call")
+        async for e in yield_tool_start("start_research", {"proposal": "Investigate LNN Applications in Robotics"}, res2_tool_id, "planner"): yield e
+        
+        res2_run_id = get_run_id("res2_inner_thought")
+        async for e in yield_text(
+            "Looking for autonomous driving and drone flight tests...",
+            res2_run_id, "Grok", "planner"
+        ): yield e
+        
+        ws2_id = get_run_id("web_search_2")
+        async for e in yield_tool_start("web_search", {"query": "Liquid Neural Networks drone navigation"}, ws2_id, "planner"): yield e
+        async for e in yield_tool_end("web_search", "Results: LNNs successfully piloted drones in unknown environments with high robustness.", ws2_id, "planner"): yield e
+        
+        async for e in yield_tool_end("start_research", 
+            "LNNs excel in robotics and autonomous driving due to their robustness to distributional shifts.", 
+            res2_tool_id, "planner"
+        ): yield e
 
-        # 5. Planner runs start_research synthesis
-        research_call_id = str(uuid.uuid4())
-        yield {
-            "planner": {
-                "planner_messages": [
-                    AIMessage(
-                        content="Delegating synthesis to research agent.",
-                        tool_calls=[{
-                            "name": "start_research",
-                            "args": {
-                                "research_proposal": (
-                                    f"Summarize findings about {topic} with comparisons and risks."
-                                )
-                            },
-                            "id": research_call_id
-                        }]
-                    )
-                ]
-            }
-        }
-        await asyncio.sleep(1.6)
+        # 5. Planner Synthesis & Report
+        # -----------------------------
+        planner_final_run_id = get_run_id("planner_final")
+        async for e in yield_text(
+            "I have gathered sufficient information on architecture and specific applications. Writing report now.",
+            planner_final_run_id, "Grok", "planner"
+        ): yield e
+        
+        wr_tool_id = get_run_id("write_report")
+        async for e in yield_tool_start("write_report", {}, wr_tool_id, "planner"): yield e
+        async for e in yield_tool_end("write_report", "Report generated.", wr_tool_id, "planner"): yield e
 
-        yield {
-            "planner": {
-                "planner_messages": [
-                    ToolMessage(
-                        content=(
-                            "Synthesis complete:\n"
-                            "- Strengths and weaknesses identified\n"
-                            "- Benchmarks highlight tradeoffs\n"
-                            "- Key risks summarized"
-                        ),
-                        tool_call_id=research_call_id,
-                        name="start_research"
-                    )
-                ]
-            }
-        }
-        await asyncio.sleep(1.1)
-
-        # 6. Planner routes to report writer
-        write_report_call_id = str(uuid.uuid4())
-        yield {
-            "planner": {
-                "planner_messages": [
-                    AIMessage(
-                        content="Preparing final report.",
-                        tool_calls=[{
-                            "name": "write_report",
-                            "args": {"additional_instructions": "Keep the report concise and structured."},
-                            "id": write_report_call_id
-                        }]
-                    )
-                ]
-            }
-        }
-        await asyncio.sleep(1.0)
-
-        # 7. Report writer returns final tool result back to GA tool call
-        yield {
-            "general_assistant": {
-                "general_assistant_messages": [
-                    ToolMessage(
-                        content=(
-                            f"# Research Report: {topic}\n\n"
-                            "## Executive Summary\n"
-                            "- Scope: comparative assessment\n"
-                            "- Outcome: tradeoffs identified across benchmarks\n\n"
-                            "## Key Findings\n"
-                            "- Finding 1: Performance differs by workload profile\n"
-                            "- Finding 2: Reliability hinges on data freshness\n"
-                            "- Finding 3: Cost scaling is the primary constraint\n\n"
-                            "## Risks\n"
-                            "- Coverage gaps in available benchmarks\n"
-                            "- Potential bias in reported metrics\n\n"
-                            "## Recommendations\n"
-                            "- Validate with a targeted pilot\n"
-                            "- Track metrics continuously during rollout"
-                        ),
-                        tool_call_id=deep_research_call_id,
-                        name="start_deep_research"
-                    )
-                ]
-            }
-        }
+        # 6. Final Loop Closure (GA)
+        # --------------------------
+        # The GA's tool call (start_deep_research) finishes now
+        report_content = (
+            "# Liquid Neural Networks (LNNs)\n\n"
+            "## Executive Summary\n"
+            "LNNs represent a significant shift in continuous-time deep learning.\n\n"
+            "## Key Findings\n"
+            "1. **Architecture**: Built on Liquid Time-constant (LTC) differential equations.\n"
+            "2. **Applications**: Proven highly effective in drone navigation and autonomous driving.\n"
+            "3. **Efficiency**: requires significantly fewer neurons than comparable LSTMs."
+        )
+        
+        async for e in yield_tool_end("start_deep_research", report_content, dr_tool_id, "general_assistant"): yield e
+        
+        # GA Final Comment
+        ga_final_run_id = get_run_id("ga_final")
+        async for e in yield_text(
+            "Here is the report on Liquid Neural Networks.",
+            ga_final_run_id, "Grok", "general_assistant"
+        ): yield e
