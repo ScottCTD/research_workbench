@@ -80,7 +80,27 @@ export TAVILY_API_KEY="your-tavily-api-key"
 export XAI_API_KEY="your-xai-api-key"
 ```
 
-## Usage
+## Web Interface (New!)
+
+A full-stack web application is now available to visualize the research process.
+
+### Quick Start
+1. **Start Backend**:
+```bash
+uv run uvicorn backend.server:app --reload --port 8000
+```
+2. **Start Frontend** (in a new terminal):
+```bash
+cd frontend
+npm run dev
+```
+3. Open `http://localhost:5173`
+
+For details, see:
+- [Backend README](backend/README.md)
+- [Frontend README](frontend/README.md)
+
+## CLI Usage
 
 Run the interactive CLI:
 
@@ -111,65 +131,58 @@ See [`examples/deep_research_system_benchmarks.md`](examples/deep_research_syste
 
 ```
 research_workbench/
-├── research_workbench/
-│   ├── __init__.py
-│   ├── deep_research.py      # Main agent orchestration logic
-│   └── prompts.py            # System prompts for all agents
+├── backend/                  # FastAPI Backend & SSE
+│   ├── server.py
+│   └── mock_service.py       # Simulation Fixture
+├── frontend/                 # React/Vite Frontend
+│   ├── src/components/       # UI Components
+│   └── src/state/            # Zustand Store & Graph Logic
+├── research_workbench/       # Core Agent Logic
+│   ├── deep_research.py      # Main graph definition
+│   └── prompts.py
 ├── examples/
-│   └── deep_research_system_benchmarks.md  # Example research output
+│   └── deep_research_system_benchmarks.md
 ├── notebooks/
-│   └── reasoning_and_toolcalls.ipynb
-├── pyproject.toml            # Project dependencies
+├── pyproject.toml
 └── README.md
 ```
 
 ## Dependencies
-
-- `langchain` - LLM framework and agent tools
-- `langgraph` - State management and workflow orchestration
-- `langchain-tavily` - Tavily search integration
-- `langchain-xai` - XAI Grok model integration
-- `loguru` - Logging
-- `tavily-python` - Tavily API client
+- `fastapi`, `sse-starlette` (Backend)
+- `react`, `react-flow`, `tailwindcss` (Frontend)
+- `langchain`, `langgraph`, `langchain-tavily`, `langchain-xai` (Core)
 
 ## Development Status
 
 **MVP Status**: ✅ Complete
 
 The core system is fully functional with:
-- ✅ Multi-agent coordination (General Assistant, Planner, Researcher, Report Writer)
-- ✅ Intelligent query routing between quick search and deep research
-- ✅ Iterative ReAct-based research agents
-- ✅ Comprehensive report generation
-- ✅ Web search integration via Tavily
-
-Current areas for future enhancement:
-- Refining agent coordination logic
-- Improving research quality and completeness
-- Optimizing cost and latency
-- Enhancing report formatting
+- ✅ **Web UI**: Visualization of the Research DAG and Real-time Chat
+- ✅ **Multi-agent coordination**: General Assistant, Planner, Researcher, Report Writer
+- ✅ **Mock Testing**: `test_mock` fixture for UI development
+- ✅ **Intelligent query routing**: Between quick search and deep research
 
 ## Future Work
 
 This project is designed as a personal research system with an ambitious roadmap:
 
 ### Agent Paradigms
-- **Debate-Verifier Agent**: Extend ReAct paradigm with an additional verifier/debator agent that performs adversarial debates to validate research findings and identify potential weaknesses or biases in conclusions.
+- **Debate-Verifier Agent**: Extend ReAct paradigm with an additional verifier/debator agent.
 
 ### Idea Generation & Synthesis
-- **Idea Generator**: Build an agent that generates new ideas based on previous ideas, creating an iterative ideation loop.
-- **Synthesis Engine**: Combine deep research and debate capabilities to synthesize ideas, ensuring generated concepts are well-researched and critically examined.
+- **Idea Generator**: Iterative ideation loop.
+- **Synthesis Engine**: Combine deep research and debate capabilities.
 
 ### Specialized Research Agents
-- **Paper Reading Agent**: Develop specialized agents for reading, understanding, and extracting insights from academic papers.
-- **Literature Search Agent**: Create a specialized research agent focused on finding and evaluating relevant academic papers and scholarly sources.
+- **Paper Reading Agent**: Extract insights from academic papers.
+- **Literature Search Agent**: Dedicated scholarly search.
 
 ### Development & Tooling
-- **Coding Agent**: Integrate a coding agent/tool to facilitate idea prototyping, data analysis, and research automation, enabling the system to build and test hypotheses programmatically.
+- **Coding Agent**: Automate data analysis and prototyping.
 
 ### Observability & Evaluation
-- **Enhanced Observability**: Implement comprehensive logging, tracing, and monitoring for all agent interactions and decision points. **(High Priority)**
-- **Evaluation Framework**: Build robust evaluation systems to measure research quality, agent performance, and system reliability. **(High Priority)**
+- **Enhanced Observability**: Comprehensive logging and tracing. **(High Priority)**
+- **Evaluation Framework**: Robust quality measurement. **(High Priority)**
 
 ## License
 

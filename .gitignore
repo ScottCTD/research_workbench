@@ -214,4 +214,4 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
-!frontend/web/lib/
+!frontend/web/lib/!frontend/src/lib/
