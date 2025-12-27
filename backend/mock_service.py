@@ -99,21 +99,21 @@ class MockGraph:
         res1_run_id = get_run_id("res1_inner_thought")
         async for e in yield_text(
             "Searching for Liquid Time-constant Networks papers and documentation...",
-            res1_run_id, "Grok", "planner"
+            res1_run_id, "Grok", "researcher" 
         ): yield e
         
         # Inner Tool: Web Search
         ws1_id = get_run_id("web_search_1")
-        async for e in yield_tool_start("web_search", {"query": "Liquid Time-constant Networks architecture"}, ws1_id, "planner"): yield e
+        async for e in yield_tool_start("web_search", {"query": "Liquid Time-constant Networks architecture"}, ws1_id, "researcher"): yield e
         async for e in yield_tool_end("web_search", 
             "Found papers by Ramin Hasani/MIT CSAIL. Key concept: equations that adapt to time-series ticks.", 
-            ws1_id, "planner"
+            ws1_id, "researcher"
         ): yield e
         
         # Inner Tool: Web Extract
         we1_id = get_run_id("web_extract_1")
-        async for e in yield_tool_start("web_extract", {"url": "https://arxiv.org/abs/2006.04439"}, we1_id, "planner"): yield e
-        async for e in yield_tool_end("web_extract", "Abstract: LTCs exhibit stable behavior and superior expressivity...", we1_id, "planner"): yield e
+        async for e in yield_tool_start("web_extract", {"url": "https://arxiv.org/abs/2006.04439"}, we1_id, "researcher"): yield e
+        async for e in yield_tool_end("web_extract", "Abstract: LTCs exhibit stable behavior and superior expressivity...", we1_id, "researcher"): yield e
         
         # Researcher 1 Conclusion
         async for e in yield_tool_end("start_research", 
@@ -129,12 +129,12 @@ class MockGraph:
         res2_run_id = get_run_id("res2_inner_thought")
         async for e in yield_text(
             "Looking for autonomous driving and drone flight tests...",
-            res2_run_id, "Grok", "planner"
+            res2_run_id, "Grok", "researcher"
         ): yield e
         
         ws2_id = get_run_id("web_search_2")
-        async for e in yield_tool_start("web_search", {"query": "Liquid Neural Networks drone navigation"}, ws2_id, "planner"): yield e
-        async for e in yield_tool_end("web_search", "Results: LNNs successfully piloted drones in unknown environments with high robustness.", ws2_id, "planner"): yield e
+        async for e in yield_tool_start("web_search", {"query": "Liquid Neural Networks drone navigation"}, ws2_id, "researcher"): yield e
+        async for e in yield_tool_end("web_search", "Results: LNNs successfully piloted drones in unknown environments with high robustness.", ws2_id, "researcher"): yield e
         
         async for e in yield_tool_end("start_research", 
             "LNNs excel in robotics and autonomous driving due to their robustness to distributional shifts.", 

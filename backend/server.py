@@ -144,16 +144,83 @@ async def run_research_task(topic: str):
         lg_node = meta.get("langgraph_node")
         
         if lg_node == "planner":
-            if "planner" not in node_mapping:
+            latest_planner_id = node_mapping.get("planner")
+            
+            if latest_planner_id:
+                # We have an existing planner.
+                # Logic: Only create a NEW planner node if we are outputting TEXT (thought/speech)
+                # AND we are currently positioned at a different node (e.g., returning from a specialized task).
+                # This prevents creating empty planner nodes just for processing tool outputs.
+                
+                is_text_stream = (kind == "on_chat_model_stream")
+                
+                if is_text_stream and current_node_id != latest_planner_id:
+                     # Create Planner-Next
+                    new_planner_id = f"planner-{str(uuid.uuid4())[:4]}"
+                    node_mapping["planner"] = new_planner_id # Update latest mapping
+                    
+                    await emit_event("NODE_CREATED", {"id": new_planner_id, "kind": "planner", "title": "Research Planner"})
+                    
+                    # Edge from previous task
+                    await emit_event("EDGE_CREATED", {"source": current_node_id, "target": new_planner_id})
+                    # Edge from old planner (history)
+                    await emit_event("EDGE_CREATED", {"source": latest_planner_id, "target": new_planner_id})
+                    
+                    await emit_event("ACTIVE_NODE_SET", {"id": new_planner_id})
+                    current_node_id = new_planner_id
+                else:
+                    # Reuse existing planner node (Star Topology for parallel tools)
+                    current_node_id = latest_planner_id
+            
+            else:
+                # First time initialization
                 planner_id = "planner-1"
                 node_mapping["planner"] = planner_id
                 await emit_event("NODE_CREATED", {"id": planner_id, "kind": "planner", "title": "Research Planner"})
                 await emit_event("EDGE_CREATED", {"source": ga_id, "target": planner_id})
                 await emit_event("ACTIVE_NODE_SET", {"id": planner_id})
                 await emit_event("UI_MODE_SET", {"mode": "research"})
-            current_node_id = node_mapping["planner"]
+                current_node_id = planner_id
+
         elif lg_node == "general_assistant":
-            current_node_id = node_mapping.get("general_assistant", ga_id)
+            # Similar logic for GA if we want GA-2, GA-3...
+            # For now, let's just create GA-Next if coming back from Planner
+            latest_ga_id = node_mapping.get("general_assistant", ga_id)
+            if latest_ga_id and current_node_id != latest_ga_id:
+                 new_ga_id = f"ga-{str(uuid.uuid4())[:4]}"
+                 node_mapping["general_assistant"] = new_ga_id
+                 await emit_event("NODE_CREATED", {"id": new_ga_id, "kind": "general_assistant", "title": "General Assistant"})
+                 await emit_event("EDGE_CREATED", {"source": current_node_id, "target": new_ga_id})
+                 await emit_event("EDGE_CREATED", {"source": latest_ga_id, "target": new_ga_id})
+                 await emit_event("ACTIVE_NODE_SET", {"id": new_ga_id})
+                 current_node_id = new_ga_id
+            else:
+                 current_node_id = latest_ga_id
+
+        # Check for Nested Agents / Tools that should be Visualized as Nodes
+        
+        # 1. Start Research (Researcher Agent)
+        if name == "start_research" and kind == "on_tool_start":
+             # Create new Researcher node
+             res_id = f"researcher-{run_id[:8]}"
+             node_mapping[run_id] = res_id 
+             
+             await emit_event("NODE_CREATED", {"id": res_id, "kind": "researcher", "title": "Researcher"})
+             # Connect from current node (usually Planner)
+             await emit_event("EDGE_CREATED", {"source": current_node_id, "target": res_id})
+             
+             await emit_event("ACTIVE_NODE_SET", {"id": res_id})
+             current_node_id = res_id # Switch context to this researcher
+
+        # 2. Write Report (Writer Agent)
+        if name == "write_report" and kind == "on_tool_start":
+             writer_id = f"writer-{run_id[:8]}"
+             # Create Writer Node
+             await emit_event("NODE_CREATED", {"id": writer_id, "kind": "writer", "title": "Report Writer"})
+             await emit_event("EDGE_CREATED", {"source": current_node_id, "target": writer_id})
+             
+             await emit_event("ACTIVE_NODE_SET", {"id": writer_id})
+             current_node_id = writer_id
         
         # 2. Handle Events
         
