@@ -30,6 +30,7 @@ export type Message = {
     nodeId: string; // The node this message belongs to
     kind: MessageKind;
     content: string; // Markdown text for chat, or summary for tool
+    streaming?: boolean;
     toolCall?: ToolCallPayload; // Only if kind === 'tool'
     timestamp: number;
 };

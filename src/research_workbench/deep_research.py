@@ -48,6 +48,7 @@ class AgentState(TypedDict, total=False):
     deep_research_tool_call_id: str
     report_writing_instructions: Optional[str]
     final_report: str
+    report_writer_node_id: Optional[str]
 
 
 def get_formatted_date():
@@ -137,6 +138,14 @@ def get_tool(name: str, config: RunnableConfig) -> BaseTool:
         return web_extract
     else:
         raise ValueError(f"Invalid tool name: {name}")
+
+
+def _with_node_id(config: RunnableConfig, node_id: Optional[str]) -> RunnableConfig:
+    if not node_id:
+        return config
+    metadata = dict(config.get("metadata") or {})
+    metadata["node_id"] = node_id
+    return {**config, "metadata": metadata}
 
 
 async def node_general_assistant(state: AgentState, config: RunnableConfig):
@@ -266,25 +275,29 @@ async def node_planner(state: AgentState, config: RunnableConfig):
                 )
                 response.tool_calls = [tool_call]
 
+            writer_node_id = f"writer-{tool_call['id'][:8]}"
             command = await get_tool(tool_call["name"], config).ainvoke(
-                tool_call["args"], config=config
+                tool_call["args"], config=_with_node_id(config, writer_node_id)
             )
             return Command(
                 update={
                     "planner_messages": [*seed_messages, response],
+                    "report_writer_node_id": writer_node_id,
                     **command.update,
                 },
                 goto=command.goto,
             )
 
-        results = await asyncio.gather(
-            *[
-                get_tool(tool_call["name"], config).ainvoke(
-                    tool_call["args"], config=config
-                )
-                for tool_call in tool_calls
-            ]
-        )
+        async def _invoke_tool(tool_call):
+            tool_config = config
+            if tool_call["name"] == "start_research":
+                researcher_node_id = f"researcher-{tool_call['id'][:8]}"
+                tool_config = _with_node_id(config, researcher_node_id)
+            return await get_tool(tool_call["name"], config).ainvoke(
+                tool_call["args"], config=tool_config
+            )
+
+        results = await asyncio.gather(*[_invoke_tool(tool_call) for tool_call in tool_calls])
         result_msgs = [
             ToolMessage(
                 content=result, tool_call_id=tool_call["id"], name=tool_call["name"]
@@ -358,7 +371,10 @@ async def node_write_report(state: AgentState, config: RunnableConfig):
         HumanMessage(content=research_trajectory),
     ]
 
-    response = await report_writer_model.ainvoke(messages)
+    writer_node_id = state.get("report_writer_node_id")
+    response = await report_writer_model.ainvoke(
+        messages, config=_with_node_id(config, writer_node_id)
+    )
 
     prev_tool_call_id = state["deep_research_tool_call_id"]
     assistant_tool_result = ToolMessage(

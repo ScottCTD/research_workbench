@@ -6,6 +6,7 @@ export class SseClient {
     private eventSource: EventSource | null = null;
     private url: string;
     private onEvent: EventHandler;
+    private reconnectTimer: number | null = null;
 
     constructor(url: string, onEvent: EventHandler) {
         this.url = url;
@@ -14,6 +15,10 @@ export class SseClient {
 
     connect() {
         if (this.eventSource) return;
+        if (this.reconnectTimer) {
+            window.clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
 
         this.eventSource = new EventSource(this.url);
 
@@ -38,12 +43,26 @@ export class SseClient {
 
         this.eventSource.onerror = (err) => {
             console.error('SSE Error', err);
-            // Optional: auto-reconnect logic or notify error
-            this.disconnect();
+            if (!this.eventSource) return;
+            if (this.eventSource.readyState !== EventSource.CLOSED) {
+                return;
+            }
+            this.eventSource.close();
+            this.eventSource = null;
+            if (this.reconnectTimer === null) {
+                this.reconnectTimer = window.setTimeout(() => {
+                    this.reconnectTimer = null;
+                    this.connect();
+                }, 1000);
+            }
         };
     }
 
     disconnect() {
+        if (this.reconnectTimer) {
+            window.clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
         if (this.eventSource) {
             this.eventSource.close();
             this.eventSource = null;

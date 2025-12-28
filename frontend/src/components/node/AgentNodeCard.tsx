@@ -20,10 +20,17 @@ export function AgentNodeCard({ id, data }: NodeProps<AgentNodeData>) {
             return;
         }
         container.scrollTop = container.scrollHeight;
-    }, [messages.length]);
+    }, [messages]);
 
     return (
-        <div className="bg-card text-card-foreground border rounded-lg shadow-md w-[400px] h-[350px] flex flex-col overflow-hidden ring-1 ring-border">
+        <div
+            className="bg-card text-card-foreground border rounded-lg shadow-md w-[400px] h-[350px] flex flex-col overflow-hidden ring-1 ring-border"
+            onDoubleClick={(e) => {
+                e.stopPropagation();
+                useStore.getState().setActiveNode(id);
+                useStore.getState().setUiMode('focus');
+            }}
+        >
             <Handle type="target" position={Position.Left} className="!w-3 !h-3 !bg-muted-foreground !border-2 !border-background" />
 
             <div className={cn(

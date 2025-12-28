@@ -10,6 +10,7 @@ export function MessageBubble({ message }: { message: Message }) {
     }
 
     const isAssistant = message.kind === 'assistant';
+    const isStreaming = Boolean(message.streaming);
 
     return (
         <div
@@ -26,11 +27,17 @@ export function MessageBubble({ message }: { message: Message }) {
                         : "bg-primary text-primary-foreground"
                 )}
             >
-                <div className="max-w-none [&>p]:mb-2 [&>p:last-child]:mb-0 [&>ul]:list-disc [&>ul]:pl-4 [&>ol]:list-decimal [&>ol]:pl-4">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {isStreaming ? (
+                    <div className="whitespace-pre-wrap">
                         {message.content || ""}
-                    </ReactMarkdown>
-                </div>
+                    </div>
+                ) : (
+                    <div className="max-w-none [&>p]:mb-2 [&>p:last-child]:mb-0 [&>ul]:list-disc [&>ul]:pl-4 [&>ol]:list-decimal [&>ol]:pl-4">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {message.content || ""}
+                        </ReactMarkdown>
+                    </div>
+                )}
             </div>
         </div>
     );

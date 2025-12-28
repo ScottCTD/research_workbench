@@ -16,9 +16,20 @@ export const selectNodeMessages = (state: AppState, nodeId: string): Message[] =
     return ids.map((id) => state.messages[id]).filter(Boolean);
 };
 
+export const selectAgentMessages = (state: AppState, kind: ResearchNode['data']['kind']): Message[] => {
+    const agentNodeIds = new Set(
+        Object.values(state.nodes)
+            .filter((node) => node.data.kind === kind)
+            .map((node) => node.id)
+    );
+
+    return Object.values(state.messages).filter((msg) => agentNodeIds.has(msg.nodeId));
+};
+
 export const selectCanUserInput = (state: AppState): boolean => {
     const activeNode = selectActiveNode(state);
-    if (!activeNode || state.uiMode === 'research') return false;
+    if (state.uiMode === 'research') return false;
+    if (!activeNode) return true;
 
     // Check if active node is general_assistant
     if (activeNode.data.kind !== 'general_assistant') return false;

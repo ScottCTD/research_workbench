@@ -1,24 +1,25 @@
 
 import asyncio
 import json
+import time
 import uuid
+from collections import defaultdict
 from typing import AsyncGenerator, Dict, Any, List
-import logging
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 from pydantic import BaseModel
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage
 
-from research_workbench.deep_research import get_graph, AgentState
+from loguru import logger
+
+from research_workbench.deep_research import get_graph
 from backend.mock_service import MockGraph
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("backend")
-
 app = FastAPI()
+
+STREAM_EMIT_INTERVAL = 0.1
 
 # Configure CORS for local frontend development
 app.add_middleware(
@@ -47,14 +48,22 @@ async def emit_event(event_type: str, payload: Dict[str, Any]):
         "payload": payload,
         "timestamp": 0
     }
-    logger.info(f"Emitting event: {event_type} to {len(subscribers)} subscribers")
-    
+    # Avoid logging per-event to prevent log storms during streaming.
     # Store in history
     history.append(event)
     
     # Broadcast
     for q in subscribers:
         await q.put(event)
+
+def get_latest_node_id(kind: str) -> str | None:
+    for event in reversed(history):
+        if event.get("type") != "NODE_CREATED":
+            continue
+        payload = event.get("payload", {})
+        if payload.get("kind") == kind:
+            return payload.get("id")
+    return None
 
 async def subscribe() -> AsyncGenerator[Dict[str, Any], None]:
     q = asyncio.Queue()
@@ -116,18 +125,22 @@ async def run_research_task(topic: str):
     # astream yields the output of the node that just finished.
     
     # 3. Stream the Graph execution using astream_events (V2)
-    logger.info(f"Starting research on: {topic}")
+    logger.info("Starting research on: {}", topic)
     
     # Map graph nodes to frontend node IDs
     node_mapping = {"general_assistant": ga_id}
     planner_id = None
+    run_id_to_node_id: Dict[str, str] = {}
     
     # Default current node
     current_node_id = ga_id
+    pending_researcher_ids: List[str] = []
 
     # Track runs to avoid processing "Generic" chains that are not relevant
     # We focus on chat models and tools.
     processed_msg_ids = {user_msg_id}
+    pending_stream_chunks: Dict[str, str] = defaultdict(str)
+    last_stream_emit: Dict[str, float] = {}
     inputs = {"general_assistant_messages": [HumanMessage(content=topic)]}
     
     async for event in graph.astream_events(inputs, config=config, version="v2"):
@@ -142,6 +155,13 @@ async def run_research_task(topic: str):
         # We'll use a heuristic: if we see 'langgraph_node' change to 'planner', we update.
         meta = event.get("metadata", {})
         lg_node = meta.get("langgraph_node")
+        node_hint = (
+            meta.get("node_id")
+            or meta.get("agent_node_id")
+            or meta.get("researcher_id")
+        )
+        if node_hint:
+            run_id_to_node_id[run_id] = node_hint
         
         if lg_node == "planner":
             latest_planner_id = node_mapping.get("planner")
@@ -154,17 +174,28 @@ async def run_research_task(topic: str):
                 
                 is_text_stream = (kind == "on_chat_model_stream")
                 
-                if is_text_stream and current_node_id != latest_planner_id:
+                if is_text_stream and (pending_researcher_ids or current_node_id != latest_planner_id):
                      # Create Planner-Next
                     new_planner_id = f"planner-{str(uuid.uuid4())[:4]}"
                     node_mapping["planner"] = new_planner_id # Update latest mapping
                     
                     await emit_event("NODE_CREATED", {"id": new_planner_id, "kind": "planner", "title": "Research Planner"})
                     
-                    # Edge from previous task
-                    await emit_event("EDGE_CREATED", {"source": current_node_id, "target": new_planner_id})
-                    # Edge from old planner (history)
-                    await emit_event("EDGE_CREATED", {"source": latest_planner_id, "target": new_planner_id})
+                    # If we just finished researcher nodes, fork the planner after them.
+                    sources: List[str] = [latest_planner_id]
+                    if pending_researcher_ids:
+                        sources.extend(pending_researcher_ids)
+                    else:
+                        sources.append(current_node_id)
+
+                    seen_sources = set()
+                    for source in sources:
+                        if not source or source in seen_sources:
+                            continue
+                        seen_sources.add(source)
+                        await emit_event("EDGE_CREATED", {"source": source, "target": new_planner_id})
+
+                    pending_researcher_ids.clear()
                     
                     await emit_event("ACTIVE_NODE_SET", {"id": new_planner_id})
                     current_node_id = new_planner_id
@@ -197,13 +228,46 @@ async def run_research_task(topic: str):
             else:
                  current_node_id = latest_ga_id
 
+        elif lg_node == "write_report":
+            writer_node_id = node_mapping.get("write_report")
+            if writer_node_id:
+                current_node_id = writer_node_id
+
+        if run_id not in run_id_to_node_id:
+            if lg_node and lg_node in node_mapping:
+                run_id_to_node_id[run_id] = node_mapping[lg_node]
+            else:
+                parent_ids: List[str] = []
+                parent_list = (
+                    event.get("parent_ids")
+                    or event.get("parent_run_ids")
+                    or meta.get("parent_ids")
+                    or meta.get("parent_run_ids")
+                )
+                if isinstance(parent_list, (list, tuple)):
+                    parent_ids.extend([pid for pid in parent_list if pid])
+                parent_id = (
+                    event.get("parent_id")
+                    or event.get("parent_run_id")
+                    or meta.get("parent_id")
+                    or meta.get("parent_run_id")
+                )
+                if parent_id:
+                    parent_ids.append(parent_id)
+                for parent in parent_ids:
+                    if parent in run_id_to_node_id:
+                        run_id_to_node_id[run_id] = run_id_to_node_id[parent]
+                        break
+
         # Check for Nested Agents / Tools that should be Visualized as Nodes
         
         # 1. Start Research (Researcher Agent)
         if name == "start_research" and kind == "on_tool_start":
              # Create new Researcher node
-             res_id = f"researcher-{run_id[:8]}"
+             res_id = meta.get("node_id") or meta.get("researcher_id") or f"researcher-{run_id[:8]}"
              node_mapping[run_id] = res_id 
+             pending_researcher_ids.append(res_id)
+             run_id_to_node_id[run_id] = res_id
              
              await emit_event("NODE_CREATED", {"id": res_id, "kind": "researcher", "title": "Researcher"})
              # Connect from current node (usually Planner)
@@ -214,13 +278,15 @@ async def run_research_task(topic: str):
 
         # 2. Write Report (Writer Agent)
         if name == "write_report" and kind == "on_tool_start":
-             writer_id = f"writer-{run_id[:8]}"
+             writer_id = meta.get("node_id") or f"writer-{run_id[:8]}"
              # Create Writer Node
-             await emit_event("NODE_CREATED", {"id": writer_id, "kind": "writer", "title": "Report Writer"})
+             await emit_event("NODE_CREATED", {"id": writer_id, "kind": "report_writer", "title": "Report Writer"})
              await emit_event("EDGE_CREATED", {"source": current_node_id, "target": writer_id})
              
              await emit_event("ACTIVE_NODE_SET", {"id": writer_id})
              current_node_id = writer_id
+             run_id_to_node_id[run_id] = writer_id
+             node_mapping["write_report"] = writer_id
         
         # 2. Handle Events
         
@@ -230,6 +296,7 @@ async def run_research_task(topic: str):
             # Only process if there is content (ignore tool call chunks for message text)
             if chunk.content:
                 content = chunk.content
+                event_node_id = run_id_to_node_id.get(run_id, current_node_id)
                 # Check if we've seen this run_id before.
                 # Since we don't keep checking a set for 'MESSAGE_UPDATED', checking 'processed_msg_ids' 
                 # helps us decide if we Append (idx 0) or Update.
@@ -239,18 +306,62 @@ async def run_research_task(topic: str):
                 # We'll use a local set to track initialized message IDs for this stream loop
                 if run_id not in processed_msg_ids:
                     processed_msg_ids.add(run_id)
+                    last_stream_emit[run_id] = time.monotonic()
                     await emit_event("MESSAGE_APPENDED", {
                         "id": run_id,
-                        "nodeId": current_node_id,
+                        "nodeId": event_node_id,
                         "kind": "assistant",
                         "content": content,
+                        "streaming": True,
                         "timestamp": 0
                     })
                 else:
-                    await emit_event("MESSAGE_UPDATED", {
-                        "id": run_id,
-                        "content": content
-                    })
+                    pending_stream_chunks[run_id] += content
+                    now = time.monotonic()
+                    if now - last_stream_emit.get(run_id, 0) >= STREAM_EMIT_INTERVAL:
+                        pending_content = pending_stream_chunks[run_id]
+                        if pending_content:
+                            pending_stream_chunks[run_id] = ""
+                            last_stream_emit[run_id] = now
+                            await emit_event("MESSAGE_UPDATED", {
+                                "id": run_id,
+                                "content": pending_content,
+                                "append": True
+                            })
+
+        elif kind == "on_chat_model_end":
+            output = event["data"].get("output")
+            output_text = ""
+            if output is not None:
+                if hasattr(output, "content"):
+                    output_text = str(output.content)
+                elif hasattr(output, "text"):
+                    output_text = str(output.text)
+                else:
+                    output_text = str(output)
+
+            pending_text = pending_stream_chunks.pop(run_id, "")
+            last_stream_emit.pop(run_id, None)
+
+            if output_text:
+                await emit_event("MESSAGE_UPDATED", {
+                    "id": run_id,
+                    "content": output_text,
+                    "append": False,
+                    "streaming": False
+                })
+            elif pending_text:
+                await emit_event("MESSAGE_UPDATED", {
+                    "id": run_id,
+                    "content": pending_text,
+                    "append": True,
+                    "streaming": False
+                })
+            else:
+                await emit_event("MESSAGE_UPDATED", {
+                    "id": run_id,
+                    "streaming": False
+                })
 
         # B. Tool Start
         elif kind == "on_tool_start":
@@ -258,11 +369,12 @@ async def run_research_task(topic: str):
             # We want to show 'web_search', 'start_research', etc.
             # We skip 'start_deep_research' wrapper if we want, but actually it's fine to show it.
             tool_data = event["data"].get("input")
+            event_node_id = run_id_to_node_id.get(run_id, current_node_id)
             
             processed_msg_ids.add(run_id)
             await emit_event("MESSAGE_APPENDED", {
                 "id": run_id,
-                "nodeId": current_node_id,
+                "nodeId": event_node_id,
                 "kind": "tool",
                 "content": f"Running {name}...",
                 "toolCall": {
@@ -291,6 +403,7 @@ async def run_research_task(topic: str):
             })
             
     await emit_event("WORKFLOW_COMPLETED", {})
+    logger.info("Research workflow completed")
 
 async def continue_research_task(message: str):
     """
@@ -310,7 +423,7 @@ async def continue_research_task(message: str):
     
     # Emit User Message
     user_msg_id = str(uuid.uuid4())
-    ga_id = "ga-1" 
+    ga_id = get_latest_node_id("general_assistant") or "ga-1"
     
     await emit_event("MESSAGE_APPENDED", {
         "id": user_msg_id,
@@ -320,11 +433,18 @@ async def continue_research_task(message: str):
         "timestamp": 0
     })
 
-    logger.info(f"Continuing research with: {message}")
+    logger.info("Continuing research with: {}", message)
     
-    node_mapping = {"general_assistant": ga_id, "planner": "planner-1"} 
+    planner_seed_id = get_latest_node_id("planner")
+    node_mapping = {"general_assistant": ga_id}
+    if planner_seed_id:
+         node_mapping["planner"] = planner_seed_id
     processed_msg_ids = {user_msg_id} 
+    pending_stream_chunks: Dict[str, str] = defaultdict(str)
+    last_stream_emit: Dict[str, float] = {}
     current_node_id = ga_id
+    pending_researcher_ids: List[str] = []
+    run_id_to_node_id: Dict[str, str] = {}
     
     inputs = {"general_assistant_messages": [HumanMessage(content=message)]}
 
@@ -335,39 +455,195 @@ async def continue_research_task(message: str):
         
         meta = event.get("metadata", {})
         lg_node = meta.get("langgraph_node")
+        node_hint = (
+            meta.get("node_id")
+            or meta.get("agent_node_id")
+            or meta.get("researcher_id")
+        )
+        if node_hint:
+            run_id_to_node_id[run_id] = node_hint
         
         if lg_node == "planner":
-             current_node_id = node_mapping.get("planner", "planner-1")
+             latest_planner_id = node_mapping.get("planner")
+             
+             if latest_planner_id:
+                  is_text_stream = (kind == "on_chat_model_stream")
+                  
+                  if is_text_stream and (pending_researcher_ids or current_node_id != latest_planner_id):
+                       new_planner_id = f"planner-{str(uuid.uuid4())[:4]}"
+                       node_mapping["planner"] = new_planner_id
+                       
+                       await emit_event("NODE_CREATED", {"id": new_planner_id, "kind": "planner", "title": "Research Planner"})
+                       
+                       # If we just finished researcher nodes, fork the planner after them.
+                       sources: List[str] = [latest_planner_id]
+                       if pending_researcher_ids:
+                            sources.extend(pending_researcher_ids)
+                       else:
+                            sources.append(current_node_id)
+                       
+                       seen_sources = set()
+                       for source in sources:
+                            if not source or source in seen_sources:
+                                 continue
+                            seen_sources.add(source)
+                            await emit_event("EDGE_CREATED", {"source": source, "target": new_planner_id})
+                       
+                       pending_researcher_ids.clear()
+                       
+                       await emit_event("ACTIVE_NODE_SET", {"id": new_planner_id})
+                       current_node_id = new_planner_id
+                  else:
+                       current_node_id = latest_planner_id
+             
+             else:
+                  planner_id = "planner-1"
+                  node_mapping["planner"] = planner_id
+                  await emit_event("NODE_CREATED", {"id": planner_id, "kind": "planner", "title": "Research Planner"})
+                  await emit_event("EDGE_CREATED", {"source": ga_id, "target": planner_id})
+                  await emit_event("ACTIVE_NODE_SET", {"id": planner_id})
+                  await emit_event("UI_MODE_SET", {"mode": "research"})
+                  current_node_id = planner_id
+        
         elif lg_node == "general_assistant":
-             current_node_id = node_mapping.get("general_assistant", ga_id)
+             latest_ga_id = node_mapping.get("general_assistant", ga_id)
+             if latest_ga_id and current_node_id != latest_ga_id:
+                  new_ga_id = f"ga-{str(uuid.uuid4())[:4]}"
+                  node_mapping["general_assistant"] = new_ga_id
+                  await emit_event("NODE_CREATED", {"id": new_ga_id, "kind": "general_assistant", "title": "General Assistant"})
+                  await emit_event("EDGE_CREATED", {"source": current_node_id, "target": new_ga_id})
+                  await emit_event("EDGE_CREATED", {"source": latest_ga_id, "target": new_ga_id})
+                  await emit_event("ACTIVE_NODE_SET", {"id": new_ga_id})
+                  current_node_id = new_ga_id
+             else:
+                  current_node_id = latest_ga_id
+
+        elif lg_node == "write_report":
+             writer_node_id = node_mapping.get("write_report")
+             if writer_node_id:
+                  current_node_id = writer_node_id
+
+        if run_id not in run_id_to_node_id:
+             if lg_node and lg_node in node_mapping:
+                  run_id_to_node_id[run_id] = node_mapping[lg_node]
+             else:
+                  parent_ids: List[str] = []
+                  parent_list = (
+                       event.get("parent_ids")
+                       or event.get("parent_run_ids")
+                       or meta.get("parent_ids")
+                       or meta.get("parent_run_ids")
+                  )
+                  if isinstance(parent_list, (list, tuple)):
+                       parent_ids.extend([pid for pid in parent_list if pid])
+                  parent_id = (
+                       event.get("parent_id")
+                       or event.get("parent_run_id")
+                       or meta.get("parent_id")
+                       or meta.get("parent_run_id")
+                  )
+                  if parent_id:
+                       parent_ids.append(parent_id)
+                  for parent in parent_ids:
+                       if parent in run_id_to_node_id:
+                            run_id_to_node_id[run_id] = run_id_to_node_id[parent]
+                            break
+
+        if name == "start_research" and kind == "on_tool_start":
+             res_id = meta.get("node_id") or meta.get("researcher_id") or f"researcher-{run_id[:8]}"
+             node_mapping[run_id] = res_id
+             pending_researcher_ids.append(res_id)
+             run_id_to_node_id[run_id] = res_id
+             
+             await emit_event("NODE_CREATED", {"id": res_id, "kind": "researcher", "title": "Researcher"})
+             await emit_event("EDGE_CREATED", {"source": current_node_id, "target": res_id})
+             
+             await emit_event("ACTIVE_NODE_SET", {"id": res_id})
+             current_node_id = res_id
+
+        if name == "write_report" and kind == "on_tool_start":
+             writer_id = meta.get("node_id") or f"writer-{run_id[:8]}"
+             await emit_event("NODE_CREATED", {"id": writer_id, "kind": "report_writer", "title": "Report Writer"})
+             await emit_event("EDGE_CREATED", {"source": current_node_id, "target": writer_id})
+             
+             await emit_event("ACTIVE_NODE_SET", {"id": writer_id})
+             current_node_id = writer_id
+             run_id_to_node_id[run_id] = writer_id
+             node_mapping["write_report"] = writer_id
 
         # A. Chat Model Streaming (Text)
         if kind == "on_chat_model_stream":
             chunk = event["data"]["chunk"]
             if chunk.content:
                 content = chunk.content
+                event_node_id = run_id_to_node_id.get(run_id, current_node_id)
                 if run_id not in processed_msg_ids:
                     processed_msg_ids.add(run_id)
+                    last_stream_emit[run_id] = time.monotonic()
                     await emit_event("MESSAGE_APPENDED", {
                         "id": run_id,
-                        "nodeId": current_node_id,
+                        "nodeId": event_node_id,
                         "kind": "assistant",
                         "content": content,
+                        "streaming": True,
                         "timestamp": 0
                     })
                 else:
-                    await emit_event("MESSAGE_UPDATED", {
-                        "id": run_id,
-                        "content": content
-                    })
+                    pending_stream_chunks[run_id] += content
+                    now = time.monotonic()
+                    if now - last_stream_emit.get(run_id, 0) >= STREAM_EMIT_INTERVAL:
+                        pending_content = pending_stream_chunks[run_id]
+                        if pending_content:
+                            pending_stream_chunks[run_id] = ""
+                            last_stream_emit[run_id] = now
+                            await emit_event("MESSAGE_UPDATED", {
+                                "id": run_id,
+                                "content": pending_content,
+                                "append": True
+                            })
+
+        elif kind == "on_chat_model_end":
+            output = event["data"].get("output")
+            output_text = ""
+            if output is not None:
+                if hasattr(output, "content"):
+                    output_text = str(output.content)
+                elif hasattr(output, "text"):
+                    output_text = str(output.text)
+                else:
+                    output_text = str(output)
+
+            pending_text = pending_stream_chunks.pop(run_id, "")
+            last_stream_emit.pop(run_id, None)
+
+            if output_text:
+                await emit_event("MESSAGE_UPDATED", {
+                    "id": run_id,
+                    "content": output_text,
+                    "append": False,
+                    "streaming": False
+                })
+            elif pending_text:
+                await emit_event("MESSAGE_UPDATED", {
+                    "id": run_id,
+                    "content": pending_text,
+                    "append": True,
+                    "streaming": False
+                })
+            else:
+                await emit_event("MESSAGE_UPDATED", {
+                    "id": run_id,
+                    "streaming": False
+                })
 
         # B. Tool Start
         elif kind == "on_tool_start":
             tool_data = event["data"].get("input")
+            event_node_id = run_id_to_node_id.get(run_id, current_node_id)
             processed_msg_ids.add(run_id)
             await emit_event("MESSAGE_APPENDED", {
                 "id": run_id,
-                "nodeId": current_node_id,
+                "nodeId": event_node_id,
                 "kind": "tool",
                 "content": f"Running {name}...",
                 "toolCall": {

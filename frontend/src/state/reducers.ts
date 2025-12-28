@@ -66,37 +66,51 @@ export function applyEvent(state: AppState, event: ServerEvent): Partial<AppStat
 
         case 'MESSAGE_APPENDED': {
             const msg = event.payload;
+            const normalizedMsg = {
+                ...msg,
+                streaming: msg.streaming ?? (msg.kind === 'assistant'),
+            };
             // Prevent duplicate message IDs in the list
-            const currentIds = state.nodeMessageIds[msg.nodeId] || [];
-            if (currentIds.includes(msg.id)) {
+            const currentIds = state.nodeMessageIds[normalizedMsg.nodeId] || [];
+            if (currentIds.includes(normalizedMsg.id)) {
                 // If it already exists, just update the content (like MESSAGE_UPDATED)
                 return {
                     messages: {
                         ...state.messages,
-                        [msg.id]: msg,
+                        [normalizedMsg.id]: normalizedMsg,
                     },
                 };
             }
             return {
                 messages: {
                     ...state.messages,
-                    [msg.id]: msg,
+                    [normalizedMsg.id]: normalizedMsg,
                 },
                 nodeMessageIds: {
                     ...state.nodeMessageIds,
-                    [msg.nodeId]: [...currentIds, msg.id],
+                    [normalizedMsg.nodeId]: [...currentIds, normalizedMsg.id],
                 },
             };
         }
 
         case 'MESSAGE_UPDATED': {
-            const { id, content } = event.payload;
+            const { id, content, append = true, streaming } = event.payload;
             const existingMsg = state.messages[id];
             if (!existingMsg) return {};
+            const nextContent =
+                typeof content === 'string'
+                    ? append
+                        ? existingMsg.content + content
+                        : content
+                    : existingMsg.content;
             return {
                 messages: {
                     ...state.messages,
-                    [id]: { ...existingMsg, content: existingMsg.content + content }
+                    [id]: {
+                        ...existingMsg,
+                        content: nextContent,
+                        ...(streaming === undefined ? {} : { streaming }),
+                    }
                 }
             };
         }
