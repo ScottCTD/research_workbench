@@ -1,19 +1,22 @@
-
 import asyncio
 import random
 import string
 import uuid
-from typing import Any, Dict, AsyncGenerator
+from typing import Any, AsyncGenerator, Dict
+
 
 class MockGraph:
     """
     Simulates a LangGraph compiled graph for Deep Research using the V2 astream_events API.
     Provides a complex, multi-step research scenario.
     """
+
     def __init__(self):
         pass
 
-    async def astream_events(self, inputs: Dict[str, Any], config: Dict[str, Any], version: str = "v2") -> AsyncGenerator[Dict[str, Any], None]:
+    async def astream_events(
+        self, inputs: Dict[str, Any], config: Dict[str, Any], version: str = "v2"
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Simulates the streaming of granular graph events (V2 API).
         """
@@ -24,7 +27,9 @@ class MockGraph:
                 run_id_map[key] = str(uuid.uuid4())
             return run_id_map[key]
 
-        def make_garbage(seed: int, words: int, min_len: int = 3, max_len: int = 10) -> str:
+        def make_garbage(
+            seed: int, words: int, min_len: int = 3, max_len: int = 10
+        ) -> str:
             rng = random.Random(seed)
             alphabet = string.ascii_lowercase
             tokens = []
@@ -48,7 +53,7 @@ class MockGraph:
         ):
             # Split text effectively to simulate token streaming
             tokens = content.split(" ")
-            
+
             # Construct chunk object structure similar to LangChain's AIMessageChunk
             class MockChunk:
                 def __init__(self, txt):
@@ -57,7 +62,7 @@ class MockGraph:
             class MockOutput:
                 def __init__(self, txt):
                     self.content = txt
-            
+
             for i, token in enumerate(tokens):
                 # Add space if not last
                 chunk_text = token + (" " if i < len(tokens) - 1 else "")
@@ -69,9 +74,9 @@ class MockGraph:
                     "name": name,
                     "run_id": run_id,
                     "metadata": metadata,
-                    "data": {"chunk": MockChunk(chunk_text)}
+                    "data": {"chunk": MockChunk(chunk_text)},
                 }
-                await asyncio.sleep(token_delay) # fast typing
+                await asyncio.sleep(token_delay)  # fast typing
 
             end_metadata = {"langgraph_node": node}
             if node_id:
@@ -81,10 +86,12 @@ class MockGraph:
                 "name": name,
                 "run_id": run_id,
                 "metadata": end_metadata,
-                "data": {"output": MockOutput(content)}
+                "data": {"output": MockOutput(content)},
             }
 
-        async def yield_tool_start(name: str, args: Dict, run_id: str, node: str, node_id: str | None = None):
+        async def yield_tool_start(
+            name: str, args: Dict, run_id: str, node: str, node_id: str | None = None
+        ):
             metadata = {"langgraph_node": node}
             if node_id:
                 metadata["node_id"] = node_id
@@ -93,11 +100,13 @@ class MockGraph:
                 "name": name,
                 "run_id": run_id,
                 "metadata": metadata,
-                "data": {"input": args}
+                "data": {"input": args},
             }
             await asyncio.sleep(0.5)
 
-        async def yield_tool_end(name: str, output: Any, run_id: str, node: str, node_id: str | None = None):
+        async def yield_tool_end(
+            name: str, output: Any, run_id: str, node: str, node_id: str | None = None
+        ):
             metadata = {"langgraph_node": node}
             if node_id:
                 metadata["node_id"] = node_id
@@ -106,7 +115,7 @@ class MockGraph:
                 "name": name,
                 "run_id": run_id,
                 "metadata": metadata,
-                "data": {"output": output}
+                "data": {"output": output},
             }
             await asyncio.sleep(0.5)
 
@@ -149,7 +158,13 @@ class MockGraph:
             we_result: str | None = None,
             thought_delay: float = 0.01,
         ):
-            async for e in yield_tool_start("start_research", {"proposal": proposal}, res_tool_id, "planner", node_id=res_node_id):
+            async for e in yield_tool_start(
+                "start_research",
+                {"proposal": proposal},
+                res_tool_id,
+                "planner",
+                node_id=res_node_id,
+            ):
                 yield e
 
             async for e in yield_text(
@@ -162,9 +177,17 @@ class MockGraph:
             ):
                 yield e
 
-            async for e in yield_tool_start("web_search", {"query": ws_query}, ws_id, "researcher", node_id=res_node_id):
+            async for e in yield_tool_start(
+                "web_search",
+                {"query": ws_query},
+                ws_id,
+                "researcher",
+                node_id=res_node_id,
+            ):
                 yield e
-            async for e in yield_tool_end("web_search", ws_result, ws_id, "researcher", node_id=res_node_id):
+            async for e in yield_tool_end(
+                "web_search", ws_result, ws_id, "researcher", node_id=res_node_id
+            ):
                 yield e
 
             async for e in yield_text(
@@ -178,16 +201,26 @@ class MockGraph:
                 yield e
 
             if we_id and we_url and we_result is not None:
-                async for e in yield_tool_start("web_extract", {"url": we_url}, we_id, "researcher", node_id=res_node_id):
+                async for e in yield_tool_start(
+                    "web_extract",
+                    {"url": we_url},
+                    we_id,
+                    "researcher",
+                    node_id=res_node_id,
+                ):
                     yield e
-                async for e in yield_tool_end("web_extract", we_result, we_id, "researcher", node_id=res_node_id):
+                async for e in yield_tool_end(
+                    "web_extract", we_result, we_id, "researcher", node_id=res_node_id
+                ):
                     yield e
 
-            async for e in yield_tool_end("start_research", summary, res_tool_id, "planner", node_id=res_node_id):
+            async for e in yield_tool_end(
+                "start_research", summary, res_tool_id, "planner", node_id=res_node_id
+            ):
                 yield e
 
         # === SCENARIO START ===
-        
+
         # 1. General Assistant (GA)
         # -------------------------
         ga_run_id = get_run_id("ga_turn_1")
@@ -202,12 +235,19 @@ class MockGraph:
             "Grok",
             "general_assistant",
             token_delay=0.002,
-        ): yield e
-        
+        ):
+            yield e
+
         # GA calls start_deep_research
         dr_tool_id = get_run_id("start_deep_research")
-        async for e in yield_tool_start("start_deep_research", {"query": "Liquid Neural Networks"}, dr_tool_id, "general_assistant"): yield e
-        
+        async for e in yield_tool_start(
+            "start_deep_research",
+            {"query": "Liquid Neural Networks"},
+            dr_tool_id,
+            "general_assistant",
+        ):
+            yield e
+
         # 2. Planner
         # ----------
         # Planner receives the ball
@@ -223,7 +263,8 @@ class MockGraph:
             "Grok",
             "planner",
             token_delay=0.002,
-        ): yield e
+        ):
+            yield e
 
         # 3. Researchers in parallel
         # ---------------------------
@@ -278,7 +319,9 @@ class MockGraph:
             res_run_id = get_run_id(f"{spec['key']}_thought")
             res_analysis_run_id = get_run_id(f"{spec['key']}_analysis")
             ws_id = get_run_id(f"{spec['key']}_web_search")
-            we_id = get_run_id(f"{spec['key']}_web_extract") if spec.get("we_url") else None
+            we_id = (
+                get_run_id(f"{spec['key']}_web_extract") if spec.get("we_url") else None
+            )
             res_node_id = f"researcher-{res_tool_id[:8]}"
 
             thought = f"{spec['proposal']} kickoff. {make_garbage(1000 + idx, 700)}"
@@ -327,11 +370,16 @@ class MockGraph:
             "Grok",
             "planner",
             token_delay=0.002,
-        ): yield e
-        
+        ):
+            yield e
+
         wr_tool_id = get_run_id("write_report")
-        async for e in yield_tool_start("write_report", {}, wr_tool_id, "planner"): yield e
-        async for e in yield_tool_end("write_report", "Report generated.", wr_tool_id, "planner"): yield e
+        async for e in yield_tool_start("write_report", {}, wr_tool_id, "planner"):
+            yield e
+        async for e in yield_tool_end(
+            "write_report", "Report generated.", wr_tool_id, "planner"
+        ):
+            yield e
 
         # 6. Final Loop Closure (GA)
         # --------------------------
@@ -348,9 +396,12 @@ class MockGraph:
             "## Raw Payload\n"
             f"{report_garbage}"
         )
-        
-        async for e in yield_tool_end("start_deep_research", report_content, dr_tool_id, "general_assistant"): yield e
-        
+
+        async for e in yield_tool_end(
+            "start_deep_research", report_content, dr_tool_id, "general_assistant"
+        ):
+            yield e
+
         # GA Final Comment
         ga_final_run_id = get_run_id("ga_final")
         ga_final_garbage = make_garbage(505, 500)
@@ -360,4 +411,5 @@ class MockGraph:
             "Grok",
             "general_assistant",
             token_delay=0.002,
-        ): yield e
+        ):
+            yield e

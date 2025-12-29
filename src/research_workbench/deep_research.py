@@ -297,7 +297,9 @@ async def node_planner(state: AgentState, config: RunnableConfig):
                 tool_call["args"], config=tool_config
             )
 
-        results = await asyncio.gather(*[_invoke_tool(tool_call) for tool_call in tool_calls])
+        results = await asyncio.gather(
+            *[_invoke_tool(tool_call) for tool_call in tool_calls]
+        )
         result_msgs = [
             ToolMessage(
                 content=result, tool_call_id=tool_call["id"], name=tool_call["name"]
@@ -391,7 +393,6 @@ async def node_write_report(state: AgentState, config: RunnableConfig):
         },
         goto="general_assistant",
     )
-
 
 
 def get_graph():
